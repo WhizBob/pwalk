@@ -1,0 +1,21 @@
+clean:
+	rm -f pwalk xacls hacls chexcmp core.*
+
+all: pwalk xacls hacls chexcmp
+
+pwalk: pwalk.c pwalk.h pwalk_acls.c pwalk_report.c pwalk_acls.h
+	$(CC) -DLINUX -DTIMESPEC_HACK pwalk.c pwalk_acls.c pwalk_report.c -o pwalk -lacl -lm -lrt -lpthread
+
+xacls: xacls.c pwalk_acls.c pwalk_acls.h
+	$(CC) xacls.c pwalk_acls.c -o xacls -lacl
+
+hacls: hacls.c pwalk_acls.h
+	$(CC) -dH hacls.c -o hacls
+
+chexcmp: chexcmp.c
+	$(CC) chexcmp.c -o chexcmp
+
+browntar:
+	tar czf browntar.tgz *.[ch] Makefile pwalk xacls hacls chexcmp onefs*
+	echo "@ REMOVE THIS LINE @" > browntar.txt
+	uuencode browntar.tgz browntar.tgz >> browntar.txt
