@@ -15,7 +15,7 @@ hacls: hacls.c pwalk_acls.h
 chexcmp: chexcmp.c
 	$(CC) chexcmp.c -o chexcmp
 
-browntar:
-	tar czf browntar.tgz *.[ch] Makefile pwalk xacls hacls chexcmp onefs*
-	echo "@ REMOVE THIS LINE @" > browntar.txt
-	uuencode browntar.tgz browntar.tgz >> browntar.txt
+pwalk_export:
+	tar czf pwalk_export.tgz *.[ch] Makefile pwalk xacls hacls chexcmp onefs*
+	echo "@ REMOVE THIS LINE @" > pwalk_export.txt
+	uuencode pwalk_export.tgz pwalk_export.tgz >> pwalk_export.txt
