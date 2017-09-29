@@ -1,12 +1,11 @@
 #!/usr/bin/awk -f
  
-# Format the "affected_uncommitted.audit" record matching the specified file
-# Usage: astat "<file>"
+# Format the ".audit" record matching the specified file to show all times in human-readable format
+# Usage: astat "<.audit-file>"
  
 BEGIN {
    FS=","
    file = "\"" ARGV[1] "\""
-   ARGV[1] = "affected_uncommitted.audit"
    w_auto_offset = 30*86400
    printf "REFERENCE: %s/%s\n",ENVIRON["PWD"],ARGV[1]
    print "FILE: " file
