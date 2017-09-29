@@ -1,0 +1,150 @@
+#!/usr/bin/python
+ 
+# Usage: wstat [-v] <file> [ <file> ... ]
+ 
+# For each <PATHNAME> in ARGV, show formatted DOMAIN and WORM info state.
+# NOTE: autocommit_target is calculated here based on st_ctime rather than w_ctime!
+ 
+import isi.fs.domain as domain
+import sys
+import errno
+import os
+import time
+import json
+ 
+#### Force I/O to be unbuffered (incantation found online) ...
+###buf_arg = 0
+###if sys.version_info[0] == 3:
+###    os.environ['PYTHONUNBUFFERED'] = 1
+###    buf_arg = 1
+###sys.stdin = os.fdopen(sys.stdin.fileno(), 'r', buf_arg)
+###sys.stdout = os.fdopen(sys.stdout.fileno(), 'a+', buf_arg)
+###sys.stderr = sys.stdout
+ 
+WORM_RETAIN_EXPIRE_NOW = 0
+WORM_RETAIN_FOREVER = 0x7FFFFFFFFFFFFFFEL
+WORM_RETAIN_USE_MIN = 1
+WORM_RETAIN_USE_MAX = 2
+ 
+verbose = 0
+ 
+def localtime(epoch_time):
+        return time.strftime("%a %b %e %H:%M:%S %Z %Y", time.localtime(epoch_time));
+ 
+def print_file_info():
+        if (verbose):
+                flags = domain_info['flags']
+                print '          domain id =',domain_info['id']
+                print '              flags = 0x'+format(flags,'X'),'=',
+                if (flags & 0x80000000): print 'DOM_READY',             # (1 << 31)
+                if (flags & 0x00000080): print 'DOM_SNAPREVERT',        # (1 << 7) 1000.0000
+                if (flags & 0x00000040): print 'DOM_PRIVDEL_DISABLED',  # (1 << 6) 0100.0000
+                if (flags & 0x00000020): print 'DOM_PRIVDEL_ON',        # (1 << 5) 0010.0000
+                if (flags & 0x00000008): print 'DOM_SYNCIQ',            # (1 << 3) 0000.1000
+                if (flags & 0x00000004): print 'DOM_COMPLIANCE',        # (1 << 2) 0000.0100
+                if (flags & 0x00000002): print 'DOM_WORM',              # (1 << 1) 0000.0010
+                if (flags & 0x00000001): print 'DOM_RESTRICTED_WRITE',  # (1 << 0) 0000.0000
+                print
+                print '         generation =',domain_info['generation']
+                print '           root_lin =',domain_info['root_lin']
+                print '      w_auto_offset =',domain_info['autocommit_offset']
+                print '       w_min_offset =',domain_info['min_offset']
+                print '       w_max_offset =',domain_info['max_offset']
+                print '       w_def_offset =',domain_info['default_offset']
+                print '    w_override_date =',domain_info['override_retention']
+ 
+# Want to mimic 'astat' output:
+#REFERENCE: /ifs/data/Isilon_Support/pkg/MAH-pwalk-2016-11-16/affected_uncommitted.audit
+#FILE: "/ifs/data/FFF/DBE/lock/7Y/0000/2016/netezza/avsasp/20161012/adw_mm_buy_quotes_orders.0000.20161012.gz"
+#         ref_date = 1479321943 - Wed Nov 16 13:45:43 EST 2016
+#     st_birthtime = 1476677953 - Mon Oct 17 00:19:13 EDT 2016
+#         st_atime = 1476677959 - Mon Oct 17 00:19:19 EDT 2016
+#         st_mtime = 1476677959 - Mon Oct 17 00:19:19 EDT 2016
+#         st_ctime = 1476677959 - Mon Oct 17 00:19:19 EDT 2016
+#          w_ctime = 1479062819 - Sun Nov 13 13:46:59 EST 2016
+#      ctime_delta = 2384860 (27.603 days)
+#        committed = UNCOMMITTED
+# w_retention_date = 1479356352 - Wed Nov 16 23:19:12 EST 2016
+#autocommit_target = 1479269959 - Tue Nov 15 23:19:19 EST 2016
+#   time_to_target = -51984 (-0.602 days) (negative is LATE)
+ 
+        print '                lin =',lin
+        print '           ref_date =',int(ref_date),'-',localtime(ref_date)
+        print '       st_birthtime =',int(statbuf.st_birthtime),'-',localtime(statbuf.st_birthtime)
+        print '           st_atime =',int(statbuf.st_atime),'-',localtime(statbuf.st_atime)
+        print '           st_mtime =',int(statbuf.st_mtime),'-',localtime(statbuf.st_mtime)
+        st_ctime = statbuf.st_ctime
+        print '           st_ctime =',int(st_ctime),'-',localtime(st_ctime)
+        w_ctime = worm_state['ctime']
+        print '            w_ctime =',int(w_ctime),'-',localtime(w_ctime)
+        eff_ctime = st_ctime                    # Normally, would be w_ctime for compliance_mode
+        ctime_delta = int(w_ctime - st_ctime)
+        print '        ctime_delta =',ctime_delta,'(',ctime_delta/86400.,'days )'
+        committed = worm_state['committed']
+        print '        w_committed =',committed
+        w_retention_date = worm_state['retention_date']
+        print '   w_retention_date =',w_retention_date,'-',localtime(w_retention_date)
+        autocommit_target = int(eff_ctime + domain_info['autocommit_offset'])
+        print '  autocommit_target =',autocommit_target,'-',localtime(autocommit_target)
+        time_to_target = int(autocommit_target - ref_date)
+        if (committed):
+                print '     time_to_target = 0'
+        else:
+                print '     time_to_target =',time_to_target,'(',time_to_target/86400.,'days ) (negative is LATE)'
+ 
+first = 1
+for arg in sys.argv:
+        if (first):
+                first = 0
+                continue
+        if (arg == '-v'):
+                verbose = 1
+                continue
+        if (arg == '-vv'):
+                verbose = 2
+                continue
+        print 'FILE: ',arg
+        try:
+                statbuf = os.lstat(arg)
+                lin = statbuf.st_ino
+        except OSError, e:
+                print 'Cannot stat',arg
+                print 'OSError:',os.strerror(e.errno)
+                continue
+ 
+        # Get the domain info ...
+        # FUTURE: For Compliance-mode domain, fetch ref_date as Compliance clock
+        try:
+                domain_info = domain.get_domain_info_by_lin(lin,-1)
+                ref_date = int(time.time())
+        except ValueError as e:
+                print 'ValueError:',os.strerror(e.errno)
+                continue
+        except OSError, e:
+                print 'OSError:',os.strerror(e.errno)
+                continue
+        except IOError, e:
+                print 'IOError:',os.strerror(e.errno)
+                continue
+ 
+        # '-vv' verbose print raw domain info ...
+        if (verbose > 1):
+                print domain_info
+ 
+        # Only SmartLock DIRECTORIES have worm_ancestors[] ...
+        try:
+                domain_info['worm_ancestors'][0]
+                print 'SKIPPING SMARTLOCK DIRECTORY'
+                continue
+        except:
+                pass
+ 
+        # Focus to simplify addressing ...
+        try:
+                worm_state = domain_info['worm_state']
+                domain_info = domain_info['domains'][0]
+        except:
+                print 'NOT A SMARTLOCK FILE OR DIRECTORY'
+                continue
+ 
+        print_file_info()

@@ -1,0 +1,20 @@
+all: pwalk wacls hacls chexcmp
+
+# isi_acl_util.h draws in a world of references ...
+PWALK_LIBS=-lisi_persona -lisi_acl -lisi_util -lm -lrt -lpthread
+PWALK_OPTS=-pthread -fbounds_checking -g -fno-limit-debug-info
+WACLS_LIBS=-lisi_persona -lisi_acl -lisi_util -lm
+WACLS_OPTS=-g
+
+pwalk: pwalk.c pwalk_onefs.c pwalk_report.c pwalk.h pwalk_acls.h pwalk_onefs.h pwalk_report.h
+	$(CC)	$(PWALK_OPTS) pwalk.c pwalk_onefs.c pwalk_report.c -o pwalk $(PWALK_LIBS)
+
+wacls: wacls.c pwalk_acls.h
+	echo ${CMAKE_SYSTEM_NAME}
+	$(CC)	$(WACLS_OPTS) wacls7.c -o wacls $(WACLS_LIBS)
+
+hacls: hacls.c pwalk_acls.h
+	$(CC)	hacls.c -o hacls
+
+chexcmp: chexcmp.c
+	$(CC)	chexcmp.c -o chexcmp

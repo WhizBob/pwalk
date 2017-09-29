@@ -1,0 +1,16 @@
+all: pwalk wacls hacls chexcmp
+
+# isi_acl_util.h draws in a world of references ...
+ISILIBS=-lisi_acl -lisi_util -lstdc++ -lisi_avscan -lisi_config -lisi_date -lisi_dda -lisi_event -lisi_flexnet -lisi_hal -lisi_hw -lisi_journal -lisi_net -lisi_newfs -lisi_version -lisi_xml -lxml2 -lm -lz
+
+pwalk: pwalk.c pwalk.h pwalk_acls.h pwalk_onefs.c pwalk_onefs.h pwalk_report.c pwalk_report.h
+	$(CC)	pwalk.c pwalk_onefs.c pwalk_report.c -o pwalk -lm -lrt -lpthread $(ISILIBS)
+
+wacls: wacls.c pwalk_acls.h
+	$(CC)	wacls.c -g -o wacls $(ISILIBS)
+
+hacls: hacls.c pwalk_acls.h
+	$(CC)	hacls.c -o hacls
+
+chexcmp: chexcmp.c
+	$(CC)	chexcmp.c -o chexcmp
