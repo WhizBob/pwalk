@@ -1,7 +1,7 @@
 # For OSX ...
 
 clean:
-	rm -f pwalk hacls chexcmp
+	rm -f ../bin/osx/pwalk ../bin/osx/hacls ../bin/osx/chexcmp
 
 all: pwalk hacls chexcmp
 
@@ -9,20 +9,13 @@ PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c
 PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h
 
 pwalk: $(PWALK_C)
-	$(CC)	$(PWALK_C) -o pwalk -lm -lpthread
+	$(CC)	$(PWALK_C) -o ../bin/osx/pwalk -lm -lpthread
 
 hacls: hacls.c pwalk_acls.h
-	$(CC)	hacls.c -o hacls
+	$(CC)	hacls.c -o ../bin/osx/hacls
 
 chexcmp: chexcmp.c
-	$(CC)	chexcmp.c -o chexcmp
-
-
-# Brown ...
-#export:
-#	tar czf export.tgz *.[ch] Makefile* *2_00*.???x onefs72/ onefs8/ linux/
-#	echo "@ REMOVE THIS LINE @" > export.txt
-#	uuencode export.tgz export.tgz >> export.txt
+	$(CC)	chexcmp.c -o ../bin/osx/chexcmp
 
 export:
 	tar czf pgbench_export.tgz pgbench*.c Makefile.onefs8 onefs8

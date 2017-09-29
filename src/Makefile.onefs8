@@ -7,14 +7,14 @@ WACLS_LIBS=-lisi_persona -lisi_acl -lisi_util -lm
 WACLS_OPTS=-g
 
 pwalk: pwalk.c pwalk_onefs.c pwalk_report.c pwalk.h pwalk_acls.h pwalk_onefs.h pwalk_report.h
-	$(CC)	$(PWALK_OPTS) pwalk.c pwalk_onefs.c pwalk_report.c -o pwalk $(PWALK_LIBS)
+	$(CC)	$(PWALK_OPTS) pwalk.c pwalk_onefs.c pwalk_report.c -o ../bin/onefs8/pwalk $(PWALK_LIBS)
 
 wacls: wacls.c pwalk_acls.h
 	echo ${CMAKE_SYSTEM_NAME}
-	$(CC)	$(WACLS_OPTS) wacls7.c -o wacls $(WACLS_LIBS)
+	$(CC)	$(WACLS_OPTS) wacls7.c -o ../bin/onefs8/wacls $(WACLS_LIBS)
 
 hacls: hacls.c pwalk_acls.h
-	$(CC)	hacls.c -o hacls
+	$(CC)	hacls.c -o ../bin/onefs8/hacls
 
 chexcmp: chexcmp.c
-	$(CC)	chexcmp.c -o chexcmp
+	$(CC)	chexcmp.c -o ../bin/onefs8/chexcmp
