@@ -1,0 +1,9 @@
+CAUTION: Binaries in these directories are NOT assured to be up-to-date
+with respect to the source code!
+
+One can compare binary timestamps with the timestamps on the ../src/*.[ch]
+files to get a clue as to whether the binaries are *likely* to be current.
+
+Running pwalk with no arguments will cause pwalk to produce a 'usage' blurb
+which will indicate the binary version -- but that is not a 100% assurance
+that the binary was built with the very latest vesion of the code.

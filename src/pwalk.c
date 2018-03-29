@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.02 BETA-7"
+#define PWALK_VERSION "pwalk 2.04 beta-3"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -31,34 +31,48 @@
 // For walking large directory structures on OneFS, better performance has been observed when
 // running the code over NFS or SMB NAS protocols versus direct execution on OneFS. With NFS,
 // this is presumeably due to the benefits of READIRPLUS more-efficiently collecting file attribute
-// data than single per-file stat() calls used natively on OneFS. Beware that high rates of
+// data than single per-file stat()-family calls used natively on OneFS. Beware that high rates of
 // READIRPLUS calls targeting a single OneFS initiator node within a OneFS cluster can cause high
 // CPU usage on that initiator node. It is advised to test first with moderate levels of concurrency
-// per-initiator-node, and to leverage the '-paths=<pathfile>' feature to spread pwalk's access to
-// OneFS across multiple initiator nodes.
+// per-initiator-node, and to leverage the '-paths=<pathfile>' multi-pathing feature to distribute
+// the burden of pwalk's queries across multiple initiator nodes.
 //
 // --- HISTORY ---
 //
 // RFE: Subtotal by bins; 0, 1k, 2k, 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, 1M, 2M and perhaps 1G, 10G, 100+G.
 // RFE: Add inode output
-// RFE: Implement '-o' option like 'ps' (inode,asize,mode,nlink,nsize,name)
-// RFE: Output filters ($variable expression like 'find' predicates)
+// RFE: Add +md5 option (take EA value, if present?)
+// RFE: Add selection criteria ($variable expression like 'find' predicates)
+// RFE: ... -paths to allow two columns for src and dst (for -cmp)
+// RFE: ... implement -find initial functionality
+// RFE: ... restructure to make extensibility easier and allow functionality stubbing
 //
+// Version 2.04 2018/03/19 - New -paths= functionality plus misc
+//	- New rules for -paths= file syntax and constraints w.r.t. -source= and -target= args
+// ... DEVELOPMENTAL ...
+//	... Add -st_block_size=512 option; default changed to 1024 (?)
+//	... Add generic parameterized metadata reporting (under construction in pwalk_report.[ch])
+//		Inspired by: ps '-o' option (inode,asize,mode,nlink,nsize,name)
+//	... Add externalized parameterization for pwalk +tally (under construction)
+//	... Remove pwalk_python.py dependency for -audit (under contruction)
+// Version 2.03 2018/03/17 - Code cleanup & new features
+//	- Arguments changed: -source= and -target replace -cd= and -shadow= concepts (retroactively)
+//	- Always silently skip .isi-compliance directories in -audit mode
+//	- Add hourly progress reporting to pwalk.log
+//	- Tweak +tally logic, preparatory to externalizing its parameters
+//	- Add -cmp[=<keyword_list>] primary mode
+//	- Use efficient cmp_files(w_id, pathname) for -cmp full binary compare
+//	- Use fstatat() and openat() for all multipath stat() and open() operations during treewalk
 // Version 2.02 2017/07/10 - Feature adds & MAJOR bug fix
 //	- Added +rm_acls option (OneFS only) removes all non-inherited ACEs
 //	- If current or calculated ACL is NULL, replace with apparent mode bits
 //	- Corrected READONLY operations to use O_NOFOLLOW | O_OPENLINK (!)
 //	- Bug fix: eliminate distinct lock for FIFO; use MP_lock instead, and simplify control flow
-//	- '+acls' changed to '-acls' to suppress ACL-fetching with -ls and -xml
+//	- '+acls' changed to '-acls' to SUPPRESS ACL-fetching with -ls and -xml
 //	- '+crc' added to -ls and -xml outputs
 // Version 2.01 2017/05/12 - Feature adds
-//	- Added -cd= option; where to cd before creating output dirctory
-// Version 2.0 2017/04/?? - ...
-//	- TODO ... -paths to allow two columns for src and dst (for -cmp)
-//	- TODO ... implement -cmp to use efficient cmp(src_fd, dst_fd) function
-//	- TODO ... implement -find initial functionality
-//	- TODO ... restructure to make extensibility easier and allow functionality stubbing
-//	- TODO ... Embed Python code in machine-generated pwalk_python.c (from pwalk_python.py)
+//	- Added -source= option; root for source directories
+// Version 2.0 2017/04 - Code restructuring & cleanup
 // Version 1.9.78 2016/12/15 - Feature added
 //	- Add OneFS logic for extracting native ownership (ID vs. SID)
 // Version 1.9.76 2016/12/13 - Feature adds
@@ -109,10 +123,10 @@
 //	- Developed companion programs: mystat.c, pwalk_create_shadow.c, pwalk_touch_shadow.c, and  touch3.c
 //	- Leverage lvtimes() when running natively on OneFS
 //	- Use lutimes(2) with -fix-mtime for symlinks
-// Version 1.8 2015/11/16 - Added -fix_mtime option (uses optional -shadow= option)
+// Version 1.8 2015/11/16 - Added -fix_mtime option (uses optional -target= option)
 //	- Repairs [amcb]time values that are bad
 //	- Now MUST specify one of [ -ls, -xml, -fix_mtime, -cmp ]
-//	- Implemented '-shadow=' for '-fix_mtime'
+//	- Implemented '-target=' for '-fix_mtime'
 // Version 1.7 2015/1/21 - Minor mods
 //	- Count commandline args in 'directories' in .log summary count
 //	- Change (hidden) DENIST option to '+denist' (was '-denist')
@@ -202,9 +216,9 @@
 // This feature is for the sole purpose of benchmarking how long de-NISTing logic might run on a
 // given data set with a given degree on concurrency applied.
 
-/* @@@ SECTION: Declarations @@@ */
+// @@@ SECTION: Declarations @@@
 
-/* @@@ Basic #includes ... */
+// @@@ Basic #includes ...
 
 // RE: http://docs.oracle.com/cd/E19683-01/806-6867/compile-74765/index.html
 #ifdef SOLARIS
@@ -215,6 +229,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -230,7 +245,6 @@
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/param.h>
@@ -247,7 +261,7 @@
 #include "pwalk_acls.h"		// POSIX ACL-handling logic only on Linux
 #endif // PWALK_ACLS
 
-// @@@ SECTION: Program initializers & compile-time constraints ...
+// @@@ SECTION: Program initializers & compile-time constraints @@@
 
 // Shorthand MACROs for casting printf args ...
 #define UL(x) ((unsigned long) x)
@@ -278,7 +292,7 @@
 #endif
 
 #define WORKER_OBUF_SIZE 32*1024	// Output buffer, per-worker
-#define PATHSEPCHAR '/'			// Might make conditional for Windoze
+#define PATHSEPCHR '/'			// Might make conditional for Windoze
 #define PATHSEPSTR "/"			// Might make conditional for Windoze
 #define SECS_PER_DAY 86400		// 24*60*60 = 86400
 
@@ -291,12 +305,13 @@ void *worker_thread(void *parg);
 
 // @@@ Global variables written *only* by controlling thread ...
 static int N_WORKERS = 1;			// <N> from "-dop=<N>"
+static int MAX_OPEN_FILES = 0;			// Calculated to compare with getrlimit(NOFILES)
 static int GZ_OUTPUT = 0;			// gzip output streams when '-gz' used
-static int DOT_SNAPSHOT = 0;			// Skip .snapshot unless '+.snapshot' used
+static int SKIP_DOT_SNAPSHOT = 1;		// Skip .snapshot[s] dirs unless '+.snapshot' specified
 static int TSTAT = 0;				// Show timed statistics when +tstat used
 static int P_MODE = 1;				// Show mode bits unless -pmode suppresses
 static int P_ACL_PLUS = 1;			// Show ACL as '+' unless -acls suppresses
-static int P_CRC32 = 0;				// Show CRC32 for -ls, -xml, -audit
+static int P_CRC32 = 0;				// Show CRC32 for -ls, -xml
 static int ST_BLOCK_SIZE = 1024;		// Units for statbuf->st_blocks (not currently settable)
 static char *PYTHON_COMMAND = NULL;		// For OneFS -audit operation
 
@@ -320,44 +335,59 @@ static int Cmd_XACLS = 0;			// +xacls= (Linux only) bitmask combo of ...
 #define Cmd_XACLS_NFS 4
 #define Cmd_XACLS_ONEFS 8
 
-static char *CWD;	 			// Our initial default directory
-static char *CD_ARG = NULL; 			// Argument from -cd= option
+// Path-related arguments & related globals ...
+static char *CWD;	 			// Initial CWD; default source and logdir context
+static char *SOURCE_ARG = NULL;  		// For '-source=' arg
+static char *TARGET_ARG = NULL;  		// For '-target=' arg
+#define CMP_BUFFER_SIZE 128*1024		// -cmp buffer sizes
+static char *OUTPUT_ARG = ".";  		// For '-output=' arg
 static char OPATH[MAX_PATHLEN+1];		// Directory we'll create for output files
-static char *SHADOW_DIR = NULL;  		// For '-shadow=' arg
 static char *WACLS_CMD = NULL;  		// For '+wacls=' arg
 
-static char *TALLY_TAG = "tally";		// For '+tally=<tag>' value
-static struct {					// klooge: hard-coded +tally options (externalize!)
+// Multipath variables ...
+#define MAXPATHS 64
+static int N_SOURCE_PATHS = 0;			// == 1 when -source= or default CWD, or >1 w/ [source]
+static int N_TARGET_PATHS = 0;
+static char *SOURCE_PATHS[MAXPATHS];		// for assembling full pathnames
+static char *TARGET_PATHS[MAXPATHS];
+static int SOURCE_DFDS[MAXPATHS];		// for fstatat() and openat()
+static int TARGET_DFDS[MAXPATHS];
+static ino_t SOURCE_INODE[MAXPATHS];		// all equivalent paths must repesent same inode
+static ino_t TARGET_INODE[MAXPATHS];
+
+// Multipath MACROS for source & target path or dfd values as f(w_id) ...
+// When we call these, we are assured that N_SOURCE_PATHS and N_TARGET_PATHS are >= 1
+#define SOURCE_DFD(x)  (SOURCE_DFDS[x % N_SOURCE_PATHS])
+#define SOURCE_PATH(x) (SOURCE_PATHS[x % N_SOURCE_PATHS])
+#define TARGET_DFD(x)  (TARGET_DFDS[x % N_TARGET_PATHS])
+#define TARGET_PATH(x) (TARGET_PATHS[x % N_TARGET_PATHS])
+
+// @@@ Global parameters for +tally (klooge: runtime parameterize these!)
+static char *TALLY_TAG = "tally";               // Default '+tally=<tag>' value
+// The TALLY_INFO 'days' column takes these values ...
+//	-1 - total (sentinal for 1st row)
+//	<N> - days (presumed to be monotonically ascending)
+//	-2 - last row (sentinal for last row, so use >= logic)
+//	0 - END
+static struct {                                 // klooge: hard-coded +tally options (externalize!)
    int days;
    char *label;
 } TALLY_INFO[] = {
-#ifdef NORMAL
    { -1, "Total" },
-   { 30, "< 30" },
-   { 60, "< 60" },
    { 90, "< 90" },
-   { 120, "< 120" },
-   { 180, "< 180" },
-   { -1, ">= 180" }
-#else
-   { -1, "Total" },
-   { 365, "< 365" },	// 1 year
-   { 730, "< 730" },	// 2 years
-   { 0, NULL },
-   { 0, NULL },
-   { 0, NULL },
-   { -1, ">= 730" }
-#endif
+   { 365, "< 365" },    // 90 - 1 year
+   { 730, "< 730" },    // 1 year - 2 years
+   { -2, ">= 730" },    // >= previous bucket
+   { 0, NULL }
 };
 
-// @@@ Globals foundation to the treewalk logic per se ...
+// @@@ Globals foundational to the treewalk logic per se ...
 static FILE *Fpop = NULL, *Fpush = NULL;	// File-based FIFO pointers
 static FILE *Flog = NULL;			// Main logfile output (pwalk.log)
 static long long T_START, T_FINISH;		// Program elapsed time (hi-res)
 struct timeval START_TIMEVAL;			// Program start time
 #define MAXPATHS 64				// Arbitrary limit for '-paths='
-static int NPATHS = 0;				// Number of equivalent path prefixes in '-paths=' file
-static char *PATHS[MAXPATHS];			// Storage for '-paths=' value pointers
+#define PROGRESS_TIME_INTERVAL 3600		// Seconds between progress outputs to log file
 
 typedef enum {BORN=0, IDLE, BUSY} wstate_t;	// Worker state
 
@@ -369,7 +399,7 @@ typedef enum {BORN=0, IDLE, BUSY} wstate_t;	// Worker state
 //	2. At the per-worker level (WS) - sub-totaled at the end of each directory scan
 //		- We do not want lock competition between workers while scanning
 //	3. At the pwalk global level (GS) - grand-total summed from worker subtotals at the very end
-//		- Aggregating the grnad totals is a lock-less operation
+//		- Aggregating the grand totals is a lock-less operation because all workers are done
 
 typedef struct {
    count_64 NFiles;				// Number of files
@@ -430,6 +460,8 @@ static struct {				// Thread-specific data (WorkerData[i]) ...
    // Pointers to runtime-allocated buffers ...
    char			*DirPath;	// Fully-qualified directory to process
    struct dirent	*Dirent;	// Buffer for readdir_r()
+   void			*SOURCE_BUF_P;	// For -cmp source
+   void			*TARGET_BUF_P;	// For -cmp source
    // pThread-related ...
    pthread_t		thread;
    pthread_cond_t	WORKER_cv;	// Condition variable for worker wakeup logic
@@ -437,10 +469,10 @@ static struct {				// Thread-specific data (WorkerData[i]) ...
 } WorkerData[MAX_WORKERS+1];			// klooge: s/b dynamically-allocated f(N_WORKERS) */
 
 // Convenience MACROs for worker's thread-specific values ...
-#define WDAT WorkerData[w_id]		// Coding convenience
-#define WLOG WDAT.wlog			// Output file handle, compact
+#define WDAT WorkerData[w_id]		// Coding convenience for w_id's worker data
+#define WLOG WDAT.wlog			// Coding convenience for w_id's Output FILE*
 
-/* @@@ SECTION: Simple support functions @@@ */
+// @@@ SECTION: Simple support functions @@@
 
 // usage() - command line instructions
 
@@ -456,12 +488,12 @@ usage(void)
 #if PWALK_AUDIT // OneFS only
    printf("	-audit			// create .audit files based on OneFS SmartLock status\n");
 #endif // PWALK_AUDIT
-   // printf("	-cmp			// create .cmp from binary compare with alternate -target directory\n");
+   printf("	-cmp[=<keyword_list>]	// create .cmp outputs based on stat(2) and binary compares\n");
    printf("	-fix_times		// create .fix outputs (or just enumerate with -dryrun)\n");
-   printf("	-csv=<ifile>		// create .csv outputs based on fields in <ifile>\n");
+   printf("	-csv=<pfile>		// create .csv outputs based on fields in <pfile> [***]\n");
    printf("   <secondary_mode> is zero or more of:\n");
    printf("	+denist			// also ... read first 128 bytes of every file encountered\n");
-   printf("	+tally[=<tag>]		// also ... output bucketized file/space counts in .tally file\n");
+   printf("	+tally[=<tag>]		// also ... output file/space counts in .tally file [***]\n");
    printf("	+crc			// also ... calculate CRC for each file (READS ALL FILES!)\n");
 #if defined(__ONEFS__)
    printf("	+rm_acls		// also ... remove non-inherited ACEs in any ACLs encountered\n");
@@ -471,12 +503,13 @@ usage(void)
    printf("	+xacls=[bin|nfs|chex]	// also ... create .acl4bin, .acl4nfs, .acl4chex outputs\n");
 #endif // PWALK_ACLS
    printf("   <option> values are:\n");
-   printf("	-cd=<relative_path>	// cd to here before evaluating directory arguments\n");
    printf("	-dop=<n>		// specifies the Degree Of Parallelism (max number of workers)\n");
+   printf("	-source=<source_dir>	// source directory; default is CWD\n");
+   printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp\n");
+   printf("	-output=<output_dir>	// output directory; where output directory will be created\n");
    printf("	-paths=<paths_file>	// specify equivalent pathname prefixes for multi-pathing\n");
    printf("	-gz			// gzip output files (HANGS on OSX!!)\n");
    printf("	-dryrun			// suppress making changes (with -fix_times)\n");
-   printf("	-shadow=<shadow_d>	// shadow directory; optional (with -fix_times)\n");
    printf("	-pmode			// suppress showing formatted mode bits (with -ls and -xml)\n");
    printf("	-acls			// suppress ACL info in some outputs, eg: '+'\n");
    printf("	-v			// verbose; verbosity increased by each '-v'\n");
@@ -484,33 +517,60 @@ usage(void)
    printf("	+tstat			// include hi-res timing statistics in some outputs\n");
    printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("   <directory> ...		// one or more directories to traverse\n");
+   printf("NOTE: [***] indicates partially-implemented feature, under development.\n");
    exit(-1);
 }
 
 // LogMsg() - write to main output log stream (Flog); serialized by mutex, with a timestamp
-// being generated anytime more than a second has passed since the last output. If called with
-// a NULL msg, generate a timestamp and flush Flog.
+// being generated anytime more than a second has passed since the last output.
+//
+// If called with a NULL msg, possibly generate a progress report, and always flush Flog.
+//
+// NOTE: The FIFO depth show in the periodic progress report is just the current (unpopped)
+// FIFO depth. More might be reported, but it would require locks around per-worker data
+// structures, and that would limit out future ability to implement the workers as distinct
+// processes, each possibly running on different OS images.
 
 void
 LogMsg(char *msg)
 {
-   static time_t last_time = 0;
-   time_t this_time;
+   static time_t last_time = 0, progress_time = 0;
+   time_t time_now;
+   int show_timestamp = FALSE, show_progress = FALSE;
    char timestamp[32];		// ctime() only needs 26 bytes
+
+   assert (Flog != 0);		// Fail fast is Flog is not initialized!
+   time_now = time(NULL);	// Determine current time ...
 
    pthread_mutex_lock(&LOGMSG_mutex);				// +++ LOGMSG lock +++
 
-   // If time has advanced, log a timestamp ...
-   this_time = time(NULL);
-   if (this_time > last_time) {
-      last_time = this_time;
-      ctime_r(&this_time, timestamp);
-      if (Flog) fputs(timestamp, Flog);
+   // Shall we emit a progress line?
+   if (progress_time == 0) {
+      progress_time = time_now;
+   } else if ((time_now - progress_time) >= PROGRESS_TIME_INTERVAL) {
+      show_progress = TRUE;
+      progress_time = time_now;
    }
 
-   // NULL message forces a flush ...
-   if (msg == NULL) fflush(Flog);
-   else             fputs(msg, Flog);
+   // Shall we emit a timestamp?
+   if ((msg != NULL || show_progress) && (time_now > last_time)) {
+      last_time = time_now;
+      show_timestamp = TRUE;
+   }
+
+   // Outputs: [timestamp], [progress], (msg | <flush>) ...
+   if (show_timestamp) {
+      ctime_r(&time_now, timestamp);
+      fputs(timestamp, Flog);
+   }
+   if (show_progress) {
+      fprintf(Flog, "PROGRESS: FIFO depth = %d\n", fifo_pop(NULL));
+   }
+   if (msg == NULL) {
+      fflush(Flog);
+   } else {
+      fputs(msg, Flog);
+   }
 
    pthread_mutex_unlock(&LOGMSG_mutex);				// --- LOGMSG lock ---
 }
@@ -720,7 +780,7 @@ pwalk_format_time_t(const time_t *date_p, char *output, const int output_size, c
    }
 }
 
-/* @@@ SECTION: Portable hi-resolution timing support  @@@ */
+// @@@ SECTION: Portable hi-resolution timing support  @@@
 
 // gethrtime(void) - return nanoseconds, monotonically ascending, platform-independent.
 
@@ -766,7 +826,7 @@ worker_aux_create(int w_id, FILE **pFILE, char *ftype)
    char ofile[MAX_PATHLEN+64];
    char emsg[128];
 
-   sprintf(ofile, "%s%cworker-%03d.%s", OPATH, PATHSEPCHAR, w_id, ftype);
+   sprintf(ofile, "%s%cworker-%03d.%s", OPATH, PATHSEPCHR, w_id, ftype);
    *pFILE = fopen(ofile, "wx");					// O_EXCL create
    if (*pFILE == NULL) {
       sprintf(emsg, "Cannot create worker %d's \"%s\" output file!\n", w_id, ftype);
@@ -776,7 +836,7 @@ worker_aux_create(int w_id, FILE **pFILE, char *ftype)
    setvbuf(*pFILE, NULL, _IOFBF, WORKER_OBUF_SIZE);		// Fully-buffered
 }
 
-/* @@@ SECTION: Worker log open/close @@@ */
+// @@@ SECTION: Worker log open/close @@@
 
 // worker_log_create() - creates per-worker output file.
 
@@ -801,10 +861,10 @@ worker_log_create(int w_id)
    else ftype = "out";
 
    if (GZ_OUTPUT) {		// WARNING: gzip-piped output hangs on OSX!
-      sprintf(ofile, "gzip > %s%cworker-%03d.%s.gz", OPATH, PATHSEPCHAR, w_id, ftype);
+      sprintf(ofile, "gzip > %s%cworker-%03d.%s.gz", OPATH, PATHSEPCHR, w_id, ftype);
       WLOG = popen(ofile, "w");
    } else {
-      sprintf(ofile, "%s%cworker-%03d.%s", OPATH, PATHSEPCHAR, w_id, ftype);
+      sprintf(ofile, "%s%cworker-%03d.%s", OPATH, PATHSEPCHR, w_id, ftype);
       WLOG = fopen(ofile, "wx");				// O_EXCL create
    }
    if (WLOG == NULL)
@@ -828,7 +888,7 @@ worker_log_create(int w_id)
    }
 }
 
-/* @@@ SECTION: Initializations @@@ */
+// @@@ SECTION: Initializations @@@
 
 // init_main_mutexes() - 1st initialization.
 
@@ -878,7 +938,7 @@ init_main_outputs(void)
    for (try=0; try < MAX_MKDIR_RETRIES; try++) {
       time(&clock);
       localtime_r(&clock, &tm_now);
-      sprintf(OPATH, "%s%c%s-%04d-%02d-%02d_%02d_%02d_%02d", CWD, PATHSEPCHAR, PROGNAME,
+      sprintf(OPATH, "%s%c%s-%04d-%02d-%02d_%02d_%02d_%02d", OUTPUT_ARG, PATHSEPCHR, PROGNAME,
          tm_now.tm_year+1900, tm_now.tm_mon+1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
       rc = mkdir(OPATH, 0777);
       if (rc == 0) break;			// Success!
@@ -891,7 +951,7 @@ init_main_outputs(void)
    assert (rc == 0);
 
    // Create ${OPATH}/${PROGNAME}.log as our primary (shared, buffered) output log ...
-   sprintf(ofile, "%s%c%s.log", OPATH, PATHSEPCHAR, PROGNAME);
+   sprintf(ofile, "%s%c%s.log", OPATH, PATHSEPCHR, PROGNAME);
    fclose(Flog);
    Flog = fopen(ofile, "w");
    if (Flog == NULL) abend("Cannot open Flog!");
@@ -902,7 +962,7 @@ init_main_outputs(void)
    LogMsg(msg);
 
    // Create ${OPATH}/${PROGNAME}.fifo as file-based FIFO, with distinct push and pop streams ...
-   sprintf(ofile, "%s%c%s.fifo", OPATH, PATHSEPCHAR, PROGNAME);
+   sprintf(ofile, "%s%c%s.fifo", OPATH, PATHSEPCHR, PROGNAME);
    Fpush = fopen(ofile, "w");
    if (Fpush == NULL) abend("Cannot create Fpush!");
    // Make our FIFO writes line-buffered ...
@@ -973,17 +1033,68 @@ init_worker_pool(void)
    pthread_condattr_destroy(&cattr);
 }
 
-/* @@@ SECTION: Multi-path support (primitive) @@@ */
+// @@@ SECTION: Multi-path support @@@
 
-// parse_paths() - get alternate 'equivalent paths' from -paths= parameter file
-// klooge: PRIMITIVE ERROR HANDLING; all assert()
+// str_normalize() - Remove triaiing whitespace in-situ in passed string, and return pointer
+// to first non-whitespace character or NUL byte if resulting string is empty.
+
+char *
+str_normalize(char *line, char **next)
+{
+   char *p, *result;
+   int len;
+
+   len = strlen(line);
+   *next = line + len + 1;
+   for (p=line; *p; p++) if (*p && isgraph(*p)) break;				// trim front
+   result = p;
+   for (p=line+len; p>result; ) if (isgraph(*p)) break; else *p-- = '\0';	// trim end
+   return result;
+}
+
+// setup_root_path() - Open passed-in directory and capture its directory fd (dfd) and inode values.
+//         if (stat(line, &sb) != 0)			// Get st_mode from stat()
+//            { errstr = "Cannot stat (%s)!\n"; goto error; }
+//         if (!S_ISDIR(sb.st_mode))			// Must be a dir
+//            { errstr = "%s is not a directory!\n"; goto error; }
+//         if (access(line, R_OK|X_OK) != 0)		// Must be readsble+traversable
+//            { errstr = "%s must be an existing traversible directory!\n"; goto error; }
+// ++++ Should these be required to be absolute?
+
+void
+setup_root_path(char *dirpath, int *dfd_out, ino_t *inode_out)
+{
+   DIR *dir;		// NOTE: These paths stay open forever!
+   int dfd;
+   struct stat st;
+
+   dir = opendir(dirpath);
+   if (dir == NULL) {
+      fprintf(Flog, "FATAL: Cannot opendir(\"%s\")!\n", dirpath);
+      exit(-1);
+   }
+   // Directory fd's are used for openat() and fstatat() multipath logic.
+#if SOLARIS
+   dfd = dir->dd_fd;
+#else
+   dfd = dirfd(dir);
+#endif
+   assert (fstat(dfd, &st) == 0);
+   if (dfd_out) *dfd_out = dfd;
+   if (inode_out) *inode_out = st.st_ino;
+}
+
+// parse_paths() - Parse -paths= parameter file
 
 void
 parse_paths(char *parfile)
 {
    int fd, fsize, i, len, rc;
-   char *p, *buf;
+   char *p, *buf, *line, *next, *errstr = "";
    struct stat sb;
+   int got_target = 0, got_source = 0, got_output = 0;
+   int dfd;	// directory file descriptor
+   enum { NONE, TARGET, SOURCE, OUTPUT } section = NONE;
 
    // Open -paths= file and read entirely into memory ...
    assert ((fd = open(parfile, O_RDONLY)) >= 0);
@@ -993,79 +1104,135 @@ parse_paths(char *parfile)
    assert ((rc = read(fd, buf, fsize)) == fsize);
    close (fd);
 
-   // Change all non-graphic characters to NULs and point PATH[i] to each run of graphic chars ...
-   for (p=buf; p<(buf+fsize); ) {
-      if (!isgraph(*p)) {
-         *p++ = '\0';
-      } else {
-         assert (NPATHS < MAXPATHS);
-         PATHS[NPATHS] = p;
-         while (isgraph(*p)) p++;
-         *p = '\0';
-         if (VERBOSE) printf("PATHS[%d] = \"%s\"\n", NPATHS, PATHS[NPATHS]);	// Capture path
-         assert (access(PATHS[NPATHS], R_OK|X_OK) == 0);			// Must be accessible
-         assert (stat(PATHS[NPATHS], &sb) == 0);				// Get st_mode from stat()
-         assert (S_ISDIR(sb.st_mode));						// Must be a dir
-         NPATHS += 1;
+   // Convert buffer to NUL-terminated strings ...
+   for (p=buf; p<(buf+fsize); p++) if (*p == '\n') *p = '\0';
+
+   // Process lines directly in-memory ...
+   for (line=buf; line < (buf+fsize); line=next) {
+      line = str_normalize(line, &next);
+      if (line[0] == '\0' || strchr("#@*%", line[0])) {		// empty line or comment
+         continue;
+      } else if (line[0] == '[') {				// section?
+         if (strcasecmp(line, "[source]") == 0) {
+            if (got_source) { errstr = "Only one %s allowed!\n"; goto error; }
+            got_source = 1; section = SOURCE;
+         } else if (strcasecmp(line, "[target]") == 0) {
+            if (got_target) { errstr = "Only one %s allowed!\n"; goto error; }
+            got_target = 1; section = TARGET;
+         } else if (strcasecmp(line, "[output]") == 0) {
+            if (got_output) { errstr = "Only one %s allowed!\n"; goto error; }
+            got_output = 1; section = OUTPUT;
+         } else {
+            { errstr = "Invalid syntax: %s\n";  goto error; }
+         }
+         continue;
+      } else {							// must be a path
+         switch(section) {
+         case NONE: {
+            { errstr = "%s appears outside of a [section] context!\n"; goto error; }
+            }
+         case SOURCE: {
+            assert (N_SOURCE_PATHS < MAXPATHS);
+            SOURCE_PATHS[N_SOURCE_PATHS++] = line;
+            break;
+            }
+         case TARGET: {
+            assert (N_TARGET_PATHS < MAXPATHS);
+            TARGET_PATHS[N_TARGET_PATHS++] = line;
+            break;
+            }
+         case OUTPUT: {
+            OUTPUT_ARG = line;
+            }
+         }
       }
    }
-   if (VERBOSE) printf("NPATHS=%d\n", NPATHS);
-   assert (NPATHS > 0);								// Must specifiy SOME paths
-   len = strlen(PATHS[0]);
-   for (i=1; i<NPATHS; i++) assert (strlen(PATHS[i]) == len);
+
+   return;
+
+error:
+   fprintf(stderr, "ERROR: -paths= : ");
+   fprintf(stderr, errstr, line);
+   exit(-1);
 }
+
+// @@@ Misc ...
+
+// skip_this_directory() - TRUE iff passed a directory path that should be silently skipped (ignored).
+// Mainly for skipping .snapshot[s] dirs, but also for skipping '.isi-compliance' dirs when in OneFS
+// SmartLock -audit mode.
+// NOTE: ONLY to be called from fifo_push(), so ONLY directory paths are passed-in!
+
+int
+skip_this_directory(char *dirpath)
+{
+   char *p;
+
+   // Isolate last pathname element ...
+   p = rindex(dirpath, PATHSEPCHR);
+   if (p == NULL) p = dirpath;
+   else p += 1;
+
+   // Directories we MIGHT skip all begin with a '.' ...
+   if (p[0] != '.') return FALSE;
+
+   // Skip .isi-compliance in -audit mode, and .snapshot[s] unless +snapshot was specified ...
+   if (Cmd_AUDIT && strcmp(p, ".isi-compliance") == 0) return TRUE;
+   if (SKIP_DOT_SNAPSHOT) {
+      if (strcmp(p, ".snapshot") == 0) return TRUE;
+      if (strcmp(p, ".snapshots") == 0) return TRUE;
+   }
+   return FALSE;
+}
+
+// catpath3() - Create concatenation of 3 passed args.
 
 void
-path_prefix(char *path, int worker)
+catpath3(char *fullpath, char *path1, char *path2, char *path3)
 {
-   int i;
+   int len;
 
-   // === klooge: needs robustness added here ...
-   if (NPATHS) {	// Overwrite initial path with worker-specific path ...
-      i = worker % NPATHS;
-      strncpy(path, PATHS[i], strlen(PATHS[i]));
+   len = 0;
+   if (path1) len += strlen(path1) + 1;
+   if (path2) len += strlen(path2) + 1;
+   if (path3) len += strlen(path3) + 1;
+   assert (len < MAX_PATHLEN);
+
+   len = 0;
+   fullpath[0] = '\0';
+   if (path1 && strlen(path1)) {
+      strcat(fullpath, path1);
+      len = strlen(fullpath); if (fullpath[len] == PATHSEPCHR) fullpath[len] = '\0';
    }
-}
-
-// path_is_snapdir() - TRUE iff filename is ".snapshot" or ".snapshots"
-// NOTE: Since this is ONLY called by fifo_push(), it SHOULD only be evaluated for DIRECTORIES
-
-int
-path_is_snapdir(char *path)
-{
-   char *p;
-
-   p = rindex(path, PATHSEPCHAR);			// Isolate last pathname element
-   if (p == NULL) p = path;
-   else p += 1;
-   if (strncmp(p, ".snapshot", 9)) return 0;		// False: Cannot match
-   if (strcmp(p, ".snapshot") == 0) return 1;		// True: ".snapshot"
-   if (strcmp(p, ".snapshots") == 0) return 1;		// True: ".snapshots"
-   return 0;						// False: Something follows '.snapshot(s)'
+   if (path2 && strlen(path2)) {
+      if (len) strcat(fullpath, PATHSEPSTR);
+      strcat(fullpath, path2);
+      len = strlen(fullpath); if (fullpath[len] == PATHSEPCHR) fullpath[len] = '\0';
+   }
+   if (path3 && strlen(path3)) {
+      if (len) strcat(fullpath, PATHSEPSTR);
+      strcat(fullpath, path3);
+      len = strlen(fullpath); if (fullpath[len] == PATHSEPCHR) fullpath[len] = '\0';
+   }
 }
 
-/* @@@ SECTION: pwalk -fix_times support @@@ */
+// @@@ SECTION: pwalk -fix_times support @@@
 
 // NOTE: w_id is passed-in for WLOG macro, as this operates in an MT context ...
-// If -shadow not specified, or no shadow file found, return 0
-// Otherwise, return 1 with passed stat structure populated from shadow
+// If no target paths specified, return 0
+// If target exists and has value mtime, return 1 and populate passed statbuf struct.
 
 int
-shadow_time(char *path, struct stat *pssb, int w_id)
+target_time(char *relpath, struct stat *pssb, int w_id)
 {
-   char shadow_path[MAX_PATHLEN+16];
-   char *p;
 
-   if (SHADOW_DIR) {
-      // Calculate shadow pathname ...
-      if (strncmp(path, "/mnt/", 5) != 0) { printf("FATAL: \"/mnt/\" not initial pathname!\n"); exit(-1); }
-      if ((p = index(path + 5, '/')) == NULL) { printf("FATAL: malformed path!\n"); exit(-1); }
-      strcpy(shadow_path, SHADOW_DIR);
-      strcat(shadow_path, p);
-      if (lstat(shadow_path, pssb)) return 0;	// no shadow file exists
-      if (pssb->st_mtime == 0) return 0;	// shadow time is zero
-   }
-   return 1;					// valid shadow time exists
+   // Should only come here if target path[s] were specified.
+   if (N_TARGET_PATHS < 1) return 0;
+
+   if (fstatat(TARGET_DFD(w_id), relpath, pssb, AT_SYMLINK_NOFOLLOW)) return 0;
+   if (pssb->st_mtime == 0) return 0;	// target time is zero
+
+   return 1;					// valid target time exists
 }
 
 int
@@ -1116,7 +1283,7 @@ format_epoch_ts(struct timespec *tsp)
 // We come here for every node traversed, just after its lstat() has been obtained ...
 
 void
-pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
+pwalk_fix_times(char *filename, char *filepath, struct stat *ssbp, int w_id)
 {
    struct timespec ts_ttime[3];	// touch times [atime=0, mtime=1, btime=2] for OneFS vtimes() call (sec+nsec)
    struct timeval tv_ttime[2];	// touch times [atime=0, mtime=1] for utimes() call (sec+usec)
@@ -1130,7 +1297,7 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    char ctime_epoch_str[32];
    char btime_epoch_str[32];
    time_t time_now;		// for localtime() -now
-   struct stat sfsb;		// shadow file stat buf
+   struct stat tfsb;		// target file stat buf
    int bad_time_mask;		// bitwise; atime.mtime.ctime.birthtime
    char bad_time_str[8];	// represent 'amcb' times's badness with 0 for OK, 1 for BAD
    int atime_OK, mtime_OK, ctime_OK, btime_OK;	// convenience booleans
@@ -1142,30 +1309,30 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    atime_OK = mtime_OK = ctime_OK = btime_OK = 1;	// assume all OK to start
    bad_time_mask = 0;
    strcpy(bad_time_str, "0000");			// "amcb" string of 0's and 1's
-   if (bad_timespec(&(oldsbp->st_atimespec))) { bad_time_mask |= 8; bad_time_str[0] = '1'; atime_OK = 0; }
-   if (bad_timespec(&(oldsbp->st_mtimespec))) { bad_time_mask |= 4; bad_time_str[1] = '1'; mtime_OK = 0; }
-   if (bad_timespec(&(oldsbp->st_ctimespec))) { bad_time_mask |= 2; bad_time_str[2] = '1'; ctime_OK = 0; }
-   if (bad_timespec(&(oldsbp->st_birthtimespec))) { bad_time_mask |= 1; bad_time_str[3] = '1'; btime_OK = 0; }
+   if (bad_timespec(&(ssbp->st_atimespec))) { bad_time_mask |= 8; bad_time_str[0] = '1'; atime_OK = 0; }
+   if (bad_timespec(&(ssbp->st_mtimespec))) { bad_time_mask |= 4; bad_time_str[1] = '1'; mtime_OK = 0; }
+   if (bad_timespec(&(ssbp->st_ctimespec))) { bad_time_mask |= 2; bad_time_str[2] = '1'; ctime_OK = 0; }
+   if (bad_timespec(&(ssbp->st_birthtimespec))) { bad_time_mask |= 1; bad_time_str[3] = '1'; btime_OK = 0; }
    if (bad_time_mask == 0) return;			// No trouble found!
 
    // Encode file type ...
-   if (S_ISREG(oldsbp->st_mode)) ftype = '-';
-   else if (S_ISDIR(oldsbp->st_mode)) ftype = 'd';
-   else if (S_ISBLK(oldsbp->st_mode)) ftype = 'b';
-   else if (S_ISCHR(oldsbp->st_mode)) ftype = 'c';
-   else if (S_ISLNK(oldsbp->st_mode)) ftype = 'l';
-   else if (S_ISSOCK(oldsbp->st_mode)) ftype = 's';
-   else if (S_ISFIFO(oldsbp->st_mode)) ftype = 'p';
+   if (S_ISREG(ssbp->st_mode)) ftype = '-';
+   else if (S_ISDIR(ssbp->st_mode)) ftype = 'd';
+   else if (S_ISBLK(ssbp->st_mode)) ftype = 'b';
+   else if (S_ISCHR(ssbp->st_mode)) ftype = 'c';
+   else if (S_ISLNK(ssbp->st_mode)) ftype = 'l';
+   else if (S_ISSOCK(ssbp->st_mode)) ftype = 's';
+   else if (S_ISFIFO(ssbp->st_mode)) ftype = 'p';
    else ftype = '?';
 
    // mtime_strategy coding scheme ...
-   //    Shadow cases ...
-   //    's' - use shadow mtime, because old mtime is BAD
-   //    'S' - use shadow mtime, because it's newer than old mtime (unlikely)
-   //    'M' - use old mtime, because it's newer than shadow mtime (likely)
-   //    Non-Shadow cases ...
-   //    'm' - use old mtime, because it's OK
-   //    'c' - use old ctime, because it's OK
+   //    Target cases ...
+   //    's' - use target mtime, because source mtime is BAD
+   //    'S' - use target mtime, because it's newer than source mtime (unlikely)
+   //    'M' - use source mtime, because it's newer than target mtime (likely)
+   //    Non-Target cases ...
+   //    'm' - use source mtime, because it's OK
+   //    'c' - use source ctime, because it's OK
    //    'n' - use 'now' time, because no other option was selected
    //    'R' - Revert good btime to earlier mtime
    //    'C' - Change good btime to earlier ctime
@@ -1174,32 +1341,32 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
 
    // First, determine mtime_strategy ...
    mtime_strategy = '-';						// Initially undecided ...
-   if (SHADOW_DIR && shadow_time(filepath, &sfsb, w_id)) {		// Nonzero shadow mtime exists ...
-      if (!mtime_OK) mtime_strategy = 's';							// Use shadow mtime (old mtime BAD)
-      else if (oldsbp->st_mtimespec.tv_sec < sfsb.st_mtimespec.tv_sec) mtime_strategy = 'S';	// Use shadow mtime (> old mtime (unlikely))
-      else mtime_strategy = 'M';								// Use old mtime (>= shadow mtime (likely))
+   if (N_TARGET_PATHS && target_time(filepath, &tfsb, w_id)) {		// Nonzero target mtime exists ...
+      if (!mtime_OK) mtime_strategy = 's';				// Use target mtime (source mtime BAD)
+      else if (ssbp->st_mtimespec.tv_sec < tfsb.st_mtimespec.tv_sec) mtime_strategy = 'S';	// Use target mtime (> source mtime (unlikely))
+      else mtime_strategy = 'M';					// Use source mtime (>= target mtime (likely))
    } else if (mtime_OK) {
-      mtime_strategy = 'm';						// 1st choice: use OK old mtime.
+      mtime_strategy = 'm';						// 1st choice: use OK source mtime.
    } else if (ctime_OK) {
-      mtime_strategy = 'c';						// 2nd choice: use OK old ctime.
+      mtime_strategy = 'c';						// 2nd choice: use OK source ctime.
    } else {
       mtime_strategy = 'n';						// 3rd choice: use 'now' time as last resort.
    }
 
    // Put chosen mtime value in ts_time[1] ...
    switch (tolower(mtime_strategy)) {
-   case 'c':	// Use old ctime ...
-      ts_ttime[1].tv_sec = oldsbp->st_ctimespec.tv_sec;
-      ts_ttime[1].tv_nsec = oldsbp->st_ctimespec.tv_nsec;
+   case 'c':	// Use source ctime ...
+      ts_ttime[1].tv_sec = ssbp->st_ctimespec.tv_sec;
+      ts_ttime[1].tv_nsec = ssbp->st_ctimespec.tv_nsec;
       break;
-   case 's':	// Use shadow mtime ...
-      ts_ttime[1].tv_sec = sfsb.st_mtimespec.tv_sec;
-      ts_ttime[1].tv_nsec = sfsb.st_mtimespec.tv_nsec;
+   case 's':	// Use target mtime ...
+      ts_ttime[1].tv_sec = tfsb.st_mtimespec.tv_sec;
+      ts_ttime[1].tv_nsec = tfsb.st_mtimespec.tv_nsec;
       break;
-   case '-':	// Carry forward old mtime ...
+   case '-':	// Carry forward source mtime ...
    case 'm':
-      ts_ttime[1].tv_sec = oldsbp->st_mtimespec.tv_sec;
-      ts_ttime[1].tv_nsec = oldsbp->st_mtimespec.tv_nsec;
+      ts_ttime[1].tv_sec = ssbp->st_mtimespec.tv_sec;
+      ts_ttime[1].tv_nsec = ssbp->st_mtimespec.tv_nsec;
       break;
    case 'n':	// Use 'now' ...
       localtime(&time_now);
@@ -1214,14 +1381,14 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    strcpy(touch_strategy, "----");
 
    // -----------------------------------------------------------------------------------------
-   // For atime: If BAD, use the mtime per mtime_strategy.  If OK, use old atime in case
+   // For atime: If BAD, use the mtime per mtime_strategy.  If OK, use source atime in case
    // utimes() is called to set mtime.
    // WARNING: Over SMB or NFS, server may apply its own atime instead of passed value.
    // In other words if atime strategy shows 'no change' ('-') it may still be changed.
    // If atime is applied via vtimes() native to OneFS, it should match mtime precisely.
    if (atime_OK) {
-      ts_ttime[0].tv_sec = oldsbp->st_atimespec.tv_sec;
-      ts_ttime[0].tv_nsec = oldsbp->st_atimespec.tv_nsec;
+      ts_ttime[0].tv_sec = ssbp->st_atimespec.tv_sec;
+      ts_ttime[0].tv_nsec = ssbp->st_atimespec.tv_nsec;
    } else {
       ts_ttime[0].tv_sec = ts_ttime[1].tv_sec;
       ts_ttime[0].tv_nsec = ts_ttime[1].tv_nsec;
@@ -1235,14 +1402,14 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
 
    // -----------------------------------------------------------------------------------------
    // For ctime: It ALWAYS gets changed to 'now' (actual server/system time) no matter what
-   // we do -- but if the old value was BAD, then we set 'n' for 'now' in the strategy string
+   // we do -- but if the source value was BAD, then we set 'n' for 'now' in the strategy string
    // to convey that fact.  There is no API means available for setting ctime explicitly to any
    // value of our choosing.
    if (!ctime_OK) touch_strategy[2] = 'n';
 
    // -----------------------------------------------------------------------------------------
-   // For birthtime: If BAD, we will apply the EARLIER of our chosen mtime or a good old ctime.
-   // If the old birthtime is OK but greater than our chosen mtime, we will apply our chosen mtime,
+   // For birthtime: If BAD, we will apply the EARLIER of our chosen mtime or a good source ctime.
+   // If the source birthtime is OK but greater than our chosen mtime, we will apply our chosen mtime,
    // -- which is EXACTLY what utimes() is SUPPOSED to do.
    // WARNING: utimes() over NFS and SMB do NOT correct future btime values on OneFS.
    // WARNING: The OneFS-local utimes() call corrects a future btime, but does not require
@@ -1250,13 +1417,13 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    // OneFS-private vtimes() call to explciitly set the btime.
    // WARNING: A OneFS birthtime can ONLY be explicitly set via the OneFS-private vtimes().
    btime_strategy = '-';
-   if (!btime_OK) {		// Use the earlier of chosen mtime or the old valid ctime
-      if (ctime_OK && (oldsbp->st_ctimespec.tv_sec < ts_ttime[1].tv_sec))
+   if (!btime_OK) {		// Use the earlier of chosen mtime or the valid source ctime
+      if (ctime_OK && (ssbp->st_ctimespec.tv_sec < ts_ttime[1].tv_sec))
          btime_strategy = 'C';			// 'Change' to ctime which predates chosen mtime ...
       else
          btime_strategy = mtime_strategy;	// Chosen mtime might be any of [mMsSnc] ...
    } else {
-      if (oldsbp->st_birthtimespec.tv_sec > ts_ttime[1].tv_sec)
+      if (ssbp->st_birthtimespec.tv_sec > ts_ttime[1].tv_sec)
          btime_strategy = 'R';			// 'Revert' to chosen mtime ...
    }
 
@@ -1265,9 +1432,9 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
       touch_strategy[3] = btime_strategy;
       btime_OK = 0;		// It may be 'OK', but this triggers our adjustment logic later.
       switch (tolower(btime_strategy)) {
-      case 'c':			// Use old ctime ...
-         ts_ttime[2].tv_sec = oldsbp->st_ctimespec.tv_sec;
-         ts_ttime[2].tv_nsec = oldsbp->st_ctimespec.tv_nsec;
+      case 'c':			// Use source ctime ...
+         ts_ttime[2].tv_sec = ssbp->st_ctimespec.tv_sec;
+         ts_ttime[2].tv_nsec = ssbp->st_ctimespec.tv_nsec;
          break;
       default:			// Use chosen mtime ...
          ts_ttime[2].tv_sec = ts_ttime[1].tv_sec;
@@ -1285,10 +1452,10 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    // impact on birthtimes in the future.
 
    // COMMENT: show all existing timestamps with full precision ....
-   strcpy(atime_epoch_str, format_epoch_ts(&(oldsbp->st_atimespec)));
-   strcpy(mtime_epoch_str, format_epoch_ts(&(oldsbp->st_mtimespec)));
-   strcpy(ctime_epoch_str, format_epoch_ts(&(oldsbp->st_ctimespec)));
-   strcpy(btime_epoch_str, format_epoch_ts(&(oldsbp->st_birthtimespec)));
+   strcpy(atime_epoch_str, format_epoch_ts(&(ssbp->st_atimespec)));
+   strcpy(mtime_epoch_str, format_epoch_ts(&(ssbp->st_mtimespec)));
+   strcpy(ctime_epoch_str, format_epoch_ts(&(ssbp->st_ctimespec)));
+   strcpy(btime_epoch_str, format_epoch_ts(&(ssbp->st_birthtimespec)));
    fprintf(WLOG, "# %c%s %s \"%s\" a=%s m=%s c=%s b=%s%s\n",
       ftype, touch_strategy,
       bad_time_str,
@@ -1297,7 +1464,7 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
       mtime_epoch_str,
       ctime_epoch_str,
       btime_epoch_str,
-      (oldsbp->st_birthtime != oldsbp->st_ctime) ? " NOTE: B!=C" : ""
+      (ssbp->st_birthtime != ssbp->st_ctime) ? " NOTE: B!=C" : ""
       );
 
    // COMMANDs: These emitted commands are for native execution on OneFS, assuming;
@@ -1310,7 +1477,7 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
    fprintf(WLOG, "touch -%s -t %s \"%s\"\n", atime_OK ? "mc" : "amc", touch_t_str, filepath);
 
    // COMMAND #2: touch3 <info> <atime> <mtime> <btime> <ifs_pathname> ...
-   // NOTE: pwalk_create_shadow depends on these 'touch3' commands ...
+   // NOTE: pwalk_create_target depends on these 'touch3' commands ...
    strcpy(atime_epoch_str, atime_OK ? "-" : format_epoch_ts(&ts_ttime[0]));
    strcpy(mtime_epoch_str, mtime_OK ? "-" : format_epoch_ts(&ts_ttime[1]));
    strcpy(btime_epoch_str, btime_OK ? "-" : format_epoch_ts(&ts_ttime[2]));
@@ -1345,307 +1512,222 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *oldsbp, int w_id)
 }
 
 
-/* @@@ SECTION: pwalk -audit support @@@ */
+// @@@ SECTION: pwalk -audit support @@@
+
+// The bulk of the pwalk -audit logic is conditionally included inline here.
 
 #if PWALK_AUDIT // OneFS only
+#include "pwalk_audit.h"
+#endif
 
-// Basic logic for extracting <path>'s worm state is ...
-// python -c 'import isi.fs.domain;import sys;print isi.fs.domain.get_domain_info('<path>')['worm_state'];'
-// worm_state: {'committed': 0, 'ctime': 0L, 'retention_date': 0L}
-// python -u // unbuffered I/O mode
-// python -E // ignore environment vbls
+// @@@ SECTION: pwalk -cmp support @@@
 
-// pwalk_audit_keys() - Secret decoder ring for .audit output files (awk -F, $column numbers) ...
+// KEYWORD   C  MASK VALUE
+// -------------------------
+// <always>  -  CMP_equal
+// <always>  !  CMP_error
+// <always>  E  CMP_notfound
+// <always>  T  CMP_type
+// mode      M  CMP_mode
+// flags     F  CMP_flags
+// owner     o  CMP_uid
+// group     g  CMP_gid
+// size      s  CMP_size
+// space     S  CMP_blocks
+// atime     a  CMP_atime
+// mtime     m  CMP_mtime
+// birthtime b  CMP_birthtime
+// content   C  CMP_content
 
-void
-pwalk_audit_keys(void)
-{
-   fprintf(Flog, "AUDIT: Column indexes for -audit ...\n");
-   fprintf(Flog, "AUDIT:	1.  lock_domain_type - SmartLock domain type;\n");
-   fprintf(Flog, "AUDIT:	  'E' - Enterprise\n");
-   fprintf(Flog, "AUDIT:	  'C' - Compliance\n");
-   fprintf(Flog, "AUDIT:	  '-' - Neither\n");
-   fprintf(Flog, "AUDIT:	2.  lock_status - SmartLock lock status;\n");
-   fprintf(Flog, "AUDIT:	  '-' - Not locked\n");
-   fprintf(Flog, "AUDIT:	  'C' - Committed (READONLY, NON-DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	  'c' - Latent Commit (READONLY, ?POSSIBLY-DELETABLE?)\n");
-   fprintf(Flog, "AUDIT:	  'X' - eXpired (READONLY, DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	3.  w_ref_date - Reference time of worm status enquiry\n");
-   fprintf(Flog, "AUDIT:	4.  st_atime\n");
-   fprintf(Flog, "AUDIT:	5.  st_mtime\n");
-   fprintf(Flog, "AUDIT:	6.  st_ctime\n");
-   fprintf(Flog, "AUDIT:	7.  st_birthtime\n");
-   fprintf(Flog, "AUDIT:	8.  w_ctime\n");
-   fprintf(Flog, "AUDIT:	9.  w_retention_date\n");
-   fprintf(Flog, "AUDIT:	10.  eff_auto_date - Ephemeral AutoCommit date\n");
-   fprintf(Flog, "AUDIT:	11.  eff_exp_type - Basis of effective expiration date;\n");
-   fprintf(Flog, "AUDIT:	   '<' - past (persisted,expired; committed with eff_exp_date in the past)\n");
-   fprintf(Flog, "AUDIT:	   '>' - future (persisted, committed)\n");
-   fprintf(Flog, "AUDIT:	   '=' - forced (persisted, uncommitted w/ w_retention_date from WORM state)\n");
-   fprintf(Flog, "AUDIT:	   '!' - future (override)\n");
-   fprintf(Flog, "AUDIT:	   '*' - future (ephemeral, based on future autocommit)\n");
-   fprintf(Flog, "AUDIT:	   '+' - TBD (expiration not ascertainable)\n");
-   fprintf(Flog, "AUDIT:	   '?' - ERROR: unexpected case w/ persisted expiration!\n");
-   fprintf(Flog, "AUDIT:	   '#' - ERROR: unexpected fall-through\n");
-   fprintf(Flog, "AUDIT:	12.  eff_exp_date - Effective expiration date\n");
-   fprintf(Flog, "AUDIT:	13.  st_uid\n");
-   fprintf(Flog, "AUDIT:	14.  st_size\n");
-   fprintf(Flog, "AUDIT:	15.  st_blocks\n");
-   fprintf(Flog, "AUDIT:	16.  \"<ifspath>\"\n");
-}
+#define CMP_equal     0x00000000
+#define CMP_error     0x00000001
+#define CMP_notfound  0x00000002
+#define CMP_type      0x00000004
+#define CMP_mode      0x00000008
+#define CMP_flags     0x00000010
+#define CMP_uid       0x00000020
+#define CMP_gid       0x00000040
+#define CMP_size      0x00000080
+#define CMP_blocks    0x00000100
+#define CMP_atime     0x00000200
+#define CMP_mtime     0x00000400
+#define CMP_birthtime 0x00000800
+#define CMP_content   0x00001000
 
-// Shell scripting hints for analyzing .audit files ...
-//
-// Discover likely 'stuck' worm_state.cdate values ...
-// cat *.audit | awk -F, '{print $8}' | sort | uniq -c | sort -n | tail
-//
-// For 'stuck' worm_state.cdate values, determine diversity of uid ...
-// cat *.audit | awk -F, '$8 == 1455685665 {print "uid=",$14}' | sort | uniq -c
-//
-// Create script to do 'touch -at' commands ...
-// cat *.audit | awk -F, '$8 == 1455685665 {print "touch -at",$12,$15}'
-//
-// One can use touch(1) to change a file's w_ctime, but it will also cause the file's
-// expiration date to be persisted using the domain's MINIMUM offset value rather than
-// its DEFAULT offset value  -- which can be pretty confusing. A SmartLock-aware
-// program should be able to innoculate against the autocommit offset lapsing by
-// issuing a net-zero-change metadata-write operation just after opening the file,
-// such as doing a chown(2) to re-state the file's owner uid, or perhaps a chmod(2) to
-// re-state its mode bit settings. Because open(), chown(), and chmod() are all synchronous
-// NFS operations, that would have the effecting of pushing the autocommit time comfortably
-// ahead in time.
+static int cmp_Check = CMP_notfound | CMP_type;	// Always check existence and type
+static struct {					// For -cmp= keyword parse into cmp_Check
+   char *keyword;
+   int code;
+   unsigned maskval;
+} cmp_Keywords[] = {
+   { "",          '!', CMP_error     },
+   { "",          'E', CMP_notfound  },
+   { "",          'T', CMP_type      },
+   { "mode",      'M', CMP_mode      },
+#if HAVE_STRUCT_STAT_ST_FLAGS
+   { "flags",     'F', CMP_flags     },
+#endif
+   { "owner",     'o', CMP_uid       },
+   { "group",     'g', CMP_gid       },
+   { "size",      's', CMP_size      },
+   { "space",     'S', CMP_blocks    },
+   { "atime",     'a', CMP_atime     },
+   { "mtime",     'm', CMP_mtime     },
+   { "birthtime", 'b', CMP_birthtime },
+   { "content",   'C', CMP_content   },
+   { NULL,        0,   0             }
+};
 
-// CAUTION: pwalk_audit_file() must be re-entrant -- so no static locals!
+// cmp_arg_parse() - Validate -cmp= keyword list into global cmp_Check bitmask.
 
 void
-pwalk_audit_file(char *ifspath, struct stat *sb, unsigned crc_val, int w_id)
+cmp_arg_parse(char *argstr)
 {
-   char pycmd[64], pyout[1024], *pnext, *p;
-   int nvals;
-   // Response variables from Python symbiont call ...
-   char py_p;			// Must always be 'P' in Python response
-   int py_rc;
-   int py_errno;
-   int w_committed;		// File WORM state values ...
-   time_t w_ref_date;
-   time_t w_ctime;
-   time_t w_retention_date;
-   time_t w_auto_offset;	// SmartLock DOMAIN values ...
-   time_t w_min_offset;
-   time_t w_max_offset;
-   time_t w_def_offset;
-   time_t w_override_date;
-   // Derived a.k.a. "ephemeral" values ...
-   long eff_ctime, eff_auto_date, eff_exp_date;	
-   int expired;		// boolean
-   // Formatting buffers and formats ...
-   char lock_domain_type, lock_status, eff_exp_type;
-   char *default_date_strf;
-   char w_ref_date_str[64], *w_ref_date_strf;
-   char st_atime_str[64], *st_atime_strf;
-   char st_mtime_str[64], *st_mtime_strf;
-   char st_ctime_str[64], *st_ctime_strf;
-   char st_birthtime_str[64], *st_birthtime_strf;
-   char w_ctime_str[64], *w_ctime_strf;
-   char w_retention_date_str[64], *w_retention_date_strf;
-   char eff_ctime_str[64], *eff_ctime_strf;
-   char eff_auto_date_str[64], *eff_auto_date_strf;
-   char eff_exp_date_str[64], *eff_exp_date_strf;
+   int i, len;
+   char words[256], msg[1024], *p, *p0;
 
-   // Skip directories ...
-   if (S_ISDIR(sb->st_mode)) return;
+   // Copy args into stack buffer and replace ',' with NUL...
+   len = strlen(argstr);
+   assert (len < sizeof(words));
+   strcpy(words, argstr);
+   for (i=0; i<len; i++) if (words[i] == ',') words[i] = 0;
 
-   // --- Fragile pipe-based Python request/response logic for fetching WORM metadata ---
-   //
-   // Python is re-started after every 50,000 calls because it was determined that the
-   // particular logic being used caused it to fail after about 100,000 calls -- presumeably
-   // due to heap exhaustion or other such issue. This logic is a 'Software Aging and
-   // Rejuvenation (SAR) strategy that will not be necessary when this logic is re-coded to
-   // use OneFS native C-language APIs.
-
-   if ((WS[w_id]->NPythonCalls % 50000) == 0) {	// Start or re-start Python co-process
-      if (WDAT.PYTHON_PIPE) {
-         fprintf(WDAT.PYTHON_PIPE, "-1\n");	// Signal script to exit()
-         pclose(WDAT.PYTHON_PIPE);
+   p = p0 = words;
+   while ((p-p0) < len) {		// for each passwd kw
+      for (i=0; ; i++) {		// for each value kw
+         if (cmp_Keywords[i].keyword == NULL) {
+            fprintf(Flog, "FATAL: Invalid -cmp= keyword: \"%s\"\n", p);
+            exit(-1);
+         } else if (strcmp(p, cmp_Keywords[i].keyword) == 0) {
+            cmp_Check |= cmp_Keywords[i].maskval; break;
+         }
       }
-      WDAT.PYTHON_PIPE = popen(PYTHON_COMMAND, "r+");
-      if (VERBOSE > 2) { fprintf(WLOG, "@ <START Python>\n"); fflush(WLOG); }
+      p += strlen(p) + 1;
    }
-   if (WDAT.PYTHON_PIPE == NULL) abend("Cannot start Python co-process!");
-
-   // @@@ Fetch raw WORM info for OneFS LIN @@@
-   sprintf(pycmd, "%llu", sb->st_ino);
-   fprintf(WDAT.PYTHON_PIPE, "%s\n", pycmd);		// Python REQUEST is just inode (LIN)
-   WS[w_id]->NPythonCalls += 1;
-   fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE);	// Python RESPONSE
-   if (VERBOSE > 2) { fprintf(WLOG, "@ << %s", pyout); fflush(WLOG); }
-
-   // Parse OneFS WORM info from Python co-process (normally 12 space-delimited columns) ...
-   //        print 'P',     				-> py_p (literal 'P' always 1st value, else die!)
-   //        print 0,     				-> py_rc (0 on successful fetch of WORM data)
-   //        print 0,     				-> py_errno
-   //        print worm_state['committed'],		-> w_committed
-   //        print ref_date,  				-> w_ref_date
-   //        print worm_state['ctime'],			-> w_ctime (WORM compliance clock ctime)
-   //        print worm_state['retention_date'],       	-> w_retention_date
-   //        print domain_info['autocommit_offset'],	-> w_auto_offset
-   //        print domain_info['min_offset'],		-> w_min_offset
-   //        print domain_info['max_offset'],		-> w_max_offset
-   //        print domain_info['default_offset'],	-> w_def_offset
-   //        print domain_info['override_retention']	-> w_override_date
-   // NOTE: 18446744073709551614 == 0x7FFFFFFFFFFFFFFF -- which is default max_retention of FOREVER
-   //	sscanf() on OneFS will not parse it as a signed long long, so unsigned is used to avoid overflow
-   py_p = '?';
-   assert (sizeof(time_t) == 8);
-   nvals = sscanf(pyout, "%c %i %i %llu %i %llu %llu %llu %llu %llu %llu %llu",
-      &py_p,
-      &py_rc,
-      &py_errno,
-      &w_ref_date,
-      &w_committed,
-      &w_ctime,
-      &w_retention_date,
-      &w_auto_offset,
-      &w_min_offset,
-      &w_max_offset,
-      &w_def_offset,
-      &w_override_date);
-   if (((nvals != 12) && (nvals < 3)) || py_p != 'P') {	// Should never happen
-      fflush(WLOG);
-      fprintf(WLOG, "@ \"%s\"\n", ifspath);
-      fprintf(WLOG, "@ pycmd: \"%s\"\n", pycmd);
-      fprintf(WLOG, "@ nvals: %d\n", nvals);
-      fprintf(WLOG, "@ pyout: %s", pyout);
-      fflush(WLOG);
-      while (fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE))	// Drain Python output
-         fputs(pyout, WLOG);
-      fflush(WLOG);
-      abend("Python symbiont error! Unexpected response format!\n");
-   }
-   if (VERBOSE > 2) {
-      fprintf(WLOG, "@ >> %c %d %d %llu %d %llu %llu %llu %llu %llu %llu %llu\n",
-         py_p, py_rc, py_errno,
-         w_ref_date,
-         w_committed, w_ctime, w_retention_date,
-         w_auto_offset, w_min_offset, w_max_offset, w_def_offset, w_override_date);
-      fflush(WLOG);
-   }
-
-   // @@@ No SmartLock info; return @@@
-   if (py_rc) {
-      WS[w_id]->NPythonErrors += 1;
-      fprintf(WLOG, "-,%d,0,0,0,0,0,0,0,0,0,0,\"?\",0,%u,%lld,%lld,\"%s\"\n",
-         py_rc, sb->st_uid, sb->st_size, sb->st_blocks, ifspath);
-      return;
-   }
-
-   // @@@ Derive 'effective' and 'ephemeral' values @@@
-
-   // AutoCommit decisions are based on 'effective' ctime ...
-   eff_ctime = (w_ctime) ? w_ctime : sb->st_ctime;		// f(Compliance v. Enterprise mode)
-
-   // Effective autocommit time is zero when autocommit offset is zero ...
-   if (w_auto_offset)						// Autocommit enabled
-      eff_auto_date = eff_ctime + w_auto_offset;		// Ephemeral autocommit date
-   else								// No autocommit
-      eff_auto_date = 0;
-
-   // Determine effective expiration date as ...
-   // (a) already persisted, or
-   // (b) ephemeral (based on eff_auto_date), or
-   // (c) TBD (not ascertainable)
-   if (w_committed || w_retention_date) {
-      eff_exp_date = w_retention_date;		// Expiration date previously persisted (but file not necessarily committed)
-   } else if (eff_auto_date) {
-      eff_exp_date = eff_auto_date + w_def_offset;	// Expiration date is ephemeral, based on hypothetical future autocommit
-   } else {
-      eff_exp_date = 0;					// Expiration date not ascertainable
-   }
-
-   // Apply min and max domain constraints ...			// === VALIDATE! ===
-   // TBD ...
-
-   // Apply override date ...
-   if (eff_exp_date < w_override_date) eff_exp_date = w_override_date;		// === VALIDATE! ===
-
-   // Expired status (includes 'expired just this second') ...
-   expired = w_committed && (eff_exp_date <= w_ref_date);
-
-   // Characterize file's effective expiration date ...
-   if (expired) {
-      eff_exp_type = '<';						// Expiration is PAST (expired; committed with expiration in the past)
-   } else if (eff_exp_date == 0) {
-      eff_exp_type = '+';						// Expiration is TBD; not ascertainable
-   } else if (eff_exp_date == w_override_date) {
-      eff_exp_type = '!';						// Expiration is from domain OVERRIDE value
-   } else if (eff_exp_date == w_retention_date) {	// (Expiration is WORM-persisted ...)
-      if (eff_exp_date != sb->st_atime) eff_exp_type = '=';		// Expiration is persisted, but not committed
-      else if (w_committed) eff_exp_type = '>';				// Expiration is persisted, file is committed but not expired
-      else eff_exp_type = '?';						// ERROR: unexpected case w/ persisted expiration!
-   } else if (eff_auto_date && eff_exp_date) {
-      eff_exp_type = '*';						// future (ephemeral)
-   } else {
-      eff_exp_type = '#';						// ERROR: unexpected fall-through!
-   }
-
-   // @@@ Output Formatting @@@
-
-   // Format ENTERPRISE versus COMPLIANCE mode ...
-   lock_domain_type = w_ctime ? 'C' : 'E';
-
-   // Format COMMITTED state (order of tests very important here) ...
-   if (expired) lock_status = 'X';						// eXpired
-   else if (w_committed) lock_status = 'C';					// Committed
-   else if (eff_auto_date && (eff_auto_date <= w_ref_date)) lock_status = 'c';	// Latent commit
-   else lock_status = '-';
-
-   // Format dates ... with an eye towards future parametrization ...
-   // "%G%m%d%H%M.%S" -> YYYYMMDDhhmm.ss (for 'touch -at YYYYMMDDhhmm.ss <file>')
-   // "%F %T" -> "YYYY-MM-DD HH:MM:SS"       
-   // NULL -> format raw Unix epoch time (w/o TZ adjustment)
-
-   default_date_strf = NULL;			// Default to Unix epoch time
-   st_atime_strf = default_date_strf;
-   st_mtime_strf = default_date_strf;
-   st_ctime_strf = default_date_strf;
-   st_birthtime_strf = default_date_strf;
-   w_ref_date_strf = default_date_strf;
-   w_ctime_strf = default_date_strf;
-   w_retention_date_strf = default_date_strf;
-   eff_ctime_strf = default_date_strf;
-   eff_auto_date_strf = default_date_strf;
-   eff_exp_date_strf = default_date_strf;
-
-   pwalk_format_time_t(&(sb->st_atime), st_atime_str, sizeof(st_atime_str), st_atime_strf);
-   pwalk_format_time_t(&(sb->st_mtime), st_mtime_str, sizeof(st_mtime_str), st_mtime_strf);
-   pwalk_format_time_t(&(sb->st_ctime), st_ctime_str, sizeof(st_ctime_str), st_ctime_strf);
-   pwalk_format_time_t(&(sb->st_birthtime), st_birthtime_str, sizeof(st_birthtime_str), st_birthtime_strf);
-   pwalk_format_time_t(&w_ref_date, w_ref_date_str, sizeof(w_ref_date_str), w_ref_date_strf);
-   pwalk_format_time_t(&w_ctime, w_ctime_str, sizeof(w_ctime_str), w_ctime_strf);
-   pwalk_format_time_t(&w_retention_date, w_retention_date_str, sizeof(w_retention_date_str), w_retention_date_strf);
-   pwalk_format_time_t(&eff_ctime, eff_ctime_str, sizeof(eff_ctime_str), eff_ctime_strf);
-   pwalk_format_time_t(&eff_auto_date, eff_auto_date_str, sizeof(eff_auto_date_str), eff_auto_date_strf);
-   pwalk_format_time_t(&eff_exp_date, eff_exp_date_str, sizeof(eff_exp_date_str), eff_exp_date_strf);
-
-   // @@@ OUTPUT (audit): NORMAL -audit output line (14 columns) ...
-   // fprintf(WLOG, "%c,%c,%s,%s,%s,%s,%s,%s,%s,%c,%s,%u,%lld,%lld,\"%s\"\n",
-   //    lock_domain_type, lock_status,
-   //    w_ref_date_str, st_atime_str, st_mtime_str, st_ctime_str, eff_ctime_str, st_birthtime_str,
-   //    eff_auto_date_str, eff_exp_type, eff_exp_date_str,
-   //    sb->st_uid, sb->st_size, sb->st_blocks, ifspath);
-   fprintf(WLOG, "%c,%c,%s,%s,%s,%s,%s,%s,%s,%s,%c,%s,%u,%lld,%lld,\"%s\"\n",
-      lock_domain_type, lock_status,
-      w_ref_date_str, st_atime_str, st_mtime_str, st_ctime_str, st_birthtime_str,
-      w_ctime_str, w_retention_date_str,
-      eff_auto_date_str, eff_exp_type, eff_exp_date_str,
-      sb->st_uid, sb->st_size, sb->st_blocks, ifspath);
 }
 
-#endif // PWALK_AUDIT
+// cmp_files() - Open SOURCE and TARGET versions of pathname to do READONLY compare.
 
-/* @@@ SECTION: pwalk +tally support @@@ */
+int
+cmp_files(int w_id, char *relpath)
+{
+   int fds = -1, fdt = -1;
+   int rc = -1;		// Default is "files not equal"
+   int src_bytes, tgt_bytes;
+   char *src_buf, *tgt_buf;
+   struct stat source_sb, target_sb;
+   char *relpath_str;
 
-// Results is array with [0] == *T row, plus 6 buckets such than [6] == ">= 180" ...
+   if (PWdebug) {
+      relpath_str = relpath;								// default
+      if (relpath[0] == '.' && relpath[1] == PATHSEPCHR) relpath_str = relpath + 2;	// strip '.', if present)
+      fprintf(WLOG, "cmp_files(s): %s%c%s\n", SOURCE_PATH(w_id), PATHSEPCHR, relpath_str);
+      fprintf(WLOG, "cmp_files(t): %s%c%s\n", TARGET_PATH(w_id), PATHSEPCHR, relpath_str);
+   }
+
+   // Open both files ...
+   if ((fds = openat(SOURCE_DFD(w_id), relpath, O_RDONLY|O_NOFOLLOW|O_OPENLINK)) < 0) goto out;
+   if ((fdt = openat(TARGET_DFD(w_id), relpath, O_RDONLY|O_NOFOLLOW|O_OPENLINK)) < 0) goto out;
+
+   // ==== klooge: test to assure source and target not same file?
+
+   // Optimize sequential reading and page cache usage (klooge: would OSX fcntl() help?) ...
+#if !defined(__OSX__)
+   posix_fadvise(fds, 0L, 0L, POSIX_FADV_SEQUENTIAL|POSIX_FADV_DONTNEED);
+   posix_fadvise(fdt, 0L, 0L, POSIX_FADV_SEQUENTIAL|POSIX_FADV_DONTNEED);
+#endif
+
+   // Allocate read buffers (if not previously allocated) ...
+   // NOTE: These buffers will NEVER BE FREE'D!  The pointers to these buffers are persisted in the WorkerData[]
+   // data structure.
+#if defined(__LINUX__) || defined(__ONEFS__)
+   // Where possible, use well-aligned allocations ...
+   //	int posix_memalign(void **memptr, size_t alignment, size_t size);
+   if (WorkerData[w_id].SOURCE_BUF_P == NULL)
+      assert (posix_memalign(&WorkerData[w_id].SOURCE_BUF_P, 4096, CMP_BUFFER_SIZE) == 0);
+   if (WorkerData[w_id].TARGET_BUF_P == NULL)
+      assert (posix_memalign(&WorkerData[w_id].TARGET_BUF_P, 4096, CMP_BUFFER_SIZE) == 0);
+#else
+   assert ((WorkerData[w_id].SOURCE_BUF_P = malloc(CMP_BUFFER_SIZE)) != NULL);
+   assert ((WorkerData[w_id].TARGET_BUF_P = malloc(CMP_BUFFER_SIZE)) != NULL);
+#endif
+
+   src_buf = WorkerData[w_id].SOURCE_BUF_P;
+   tgt_buf = WorkerData[w_id].TARGET_BUF_P;
+
+   // Read and compare files ...
+   while (1) {
+       src_bytes = read(fds, src_buf, CMP_BUFFER_SIZE);
+       tgt_bytes = read(fdt, tgt_buf, CMP_BUFFER_SIZE);
+       if ((src_bytes == 0) && (tgt_bytes == 0)) { rc = 0; goto out; }	// Both @ EOF w/ zero difference!
+       if (src_bytes != tgt_bytes) goto out;				// WTF?
+       if (src_bytes <= 0) goto out;					// WTF?
+       if (memcmp(src_buf, tgt_buf, src_bytes)) goto out;		// Explicitly different!
+   }
+   // Close files as we leave ...
+out:
+   if (fds >= 0) close(fds);
+   if (fdt >= 0) close(fdt);
+   return rc;
+}
+
+// cmp_source_target() - Compare SOURCE with TARGET dir or file. w_id is needed to drive multi-pathing
+// logic for compare operations. We assume output cmp_compare_result_str is at least 16 bytes.
+
+void
+cmp_source_target(int w_id, char *relpath, struct stat *src_sb_p, char *cmp_compare_result_str)
+{
+   int i, rc;
+   struct stat target_sb;
+   struct stat *tgt_sb_p = &target_sb;;
+   char *pstr = cmp_compare_result_str;
+   unsigned cmp_result = CMP_equal;	// Start with 0
+
+   rc = fstatat(TARGET_DFD(w_id), relpath, &target_sb, AT_SYMLINK_NOFOLLOW);
+
+   // Construct result mask ...
+   if (rc != 0) {
+      cmp_result |= CMP_notfound;
+      if (errno != ENOENT) {		// ==== klooge: add WARNING to worker's count!
+          fprintf(Flog, "WARNING: fstatat(target, \"%s\") errno=%d\n", relpath, errno);
+          cmp_result |= CMP_error;
+      }
+   } else {
+      if ((src_sb_p->st_mode&S_IFMT) != (tgt_sb_p->st_mode&S_IFMT)) cmp_result |= CMP_type;
+      if ((cmp_Check&CMP_mode) && ((src_sb_p->st_mode&07777) != (tgt_sb_p->st_mode&07777))) cmp_result |= CMP_mode;
+#if HAVE_STRUCT_STAT_ST_FLAGS
+      if ((cmp_Check&CMP_flags) && (src_sb_p->st_flags != tgt_sb_p->st_flags)) cmp_result |= CMP_flags;
+#endif
+      if ((cmp_Check&CMP_uid) && (src_sb_p->st_uid != tgt_sb_p->st_uid)) cmp_result |= CMP_uid;
+      if ((cmp_Check&CMP_gid) && (src_sb_p->st_gid != tgt_sb_p->st_gid)) cmp_result |= CMP_gid;
+      if ((cmp_Check&CMP_atime) && (src_sb_p->st_atime != tgt_sb_p->st_atime)) cmp_result |= CMP_atime;
+      if ((cmp_Check&CMP_mtime) && (src_sb_p->st_mtime != tgt_sb_p->st_mtime)) cmp_result |= CMP_mtime;
+      if ((cmp_Check&CMP_birthtime) && (src_sb_p->st_birthtime != tgt_sb_p->st_birthtime)) cmp_result |= CMP_birthtime;
+      if (!(cmp_result&CMP_type) && S_ISREG(src_sb_p->st_mode)) {	// Only for regular files ...
+         if ((cmp_Check&CMP_size) && (src_sb_p->st_size != tgt_sb_p->st_size)) cmp_result |= CMP_size;
+         if ((cmp_Check&CMP_blocks) && (src_sb_p->st_blocks != tgt_sb_p->st_blocks)) cmp_result |= CMP_blocks;
+         if (cmp_Check&CMP_content) {
+            if (cmp_result&(CMP_size|CMP_type)) {
+               cmp_result |= CMP_content;	// Inferred diffence
+            } else {
+               if (cmp_files(w_id, relpath))	// Exhaustive compare
+                  cmp_result |= CMP_content;
+            }
+         }
+      }
+   }
+
+   // Construct result string from mask ...
+   memset(cmp_compare_result_str, 0, 16);	// Start w/ all NULs
+   for (i=0; cmp_Keywords[i].keyword; i++)
+      if (cmp_result&cmp_Keywords[i].maskval) *pstr++ = cmp_Keywords[i].code;
+   if (cmp_result == CMP_equal) strcpy(cmp_compare_result_str, "-");
+}
+
+// @@@ SECTION: pwalk +tally support @@@
+
+// Result is array with [0] == *T row, N-1 buckets with monotonically increasing time thresholds.
+// For row [N], ">=" compare is used to tally any not-yet-tallied files.
 //
 // [0] total
 // [1] atime < 30 days
@@ -1665,21 +1747,22 @@ pwalk_audit_file(char *ifspath, struct stat *sb, unsigned crc_val, int w_id)
 
 void
 pwalk_tally_file(struct stat *sb, int w_id)
-{
+{  
    int atime_match, days_since_accessed;
-   int i;
-
+   int i, tallyed;
+   
    // We only tally regular files here ...
    if (!S_ISREG(sb->st_mode)) return;
-
-   for (i=0; i<7; i++) {
-      days_since_accessed = (START_TIMEVAL.tv_sec - sb->st_atime)/SECS_PER_DAY;
-      atime_match = (days_since_accessed < TALLY_INFO[i].days) || (i == 6);
-      if (i == 0 || atime_match) {
+   
+   days_since_accessed = (START_TIMEVAL.tv_sec - sb->st_atime)/SECS_PER_DAY;
+   
+   for (i=tallyed=0; TALLY_INFO[i].days && !tallyed; i++) {
+      atime_match = (i == 0) || (days_since_accessed < TALLY_INFO[i].days) || (TALLY_INFO[i].days == -2);
+      if (atime_match) {
          WS[w_id]->TALLY_STATS[i].NFiles += 1;
          WS[w_id]->TALLY_STATS[i].NBytesNominal += sb->st_size;
          WS[w_id]->TALLY_STATS[i].NBytesAllocated += sb->st_blocks * ST_BLOCK_SIZE;
-         if (atime_match) break;
+         tallyed = (i > 0);     // First row is always "Total", so we keep going ...
       }
    }
 }
@@ -1692,7 +1775,7 @@ pwalk_tally_output()
    int i, j, w_id;
 
    // Output stats ...
-   sprintf(ofile, "%s%cpwalk.tally", OPATH, PATHSEPCHAR);
+   sprintf(ofile, "%s%cpwalk.tally", OPATH, PATHSEPCHR);
    TALLY = fopen(ofile, "w");
    if (TALLY == NULL) abend("Cannot create .tally file!");
 
@@ -1740,7 +1823,7 @@ selected(char *path, struct stat *sb)
    return (0);
 }
 
-/* @@@ SECTION: FIFO management @@@ */
+// @@@ SECTION: FIFO management @@@
 
 // Must be re-entrant because multiple workers may be pushing new pathnames at the same time.
 // Access is serialized by MP_mutex. These push and pop routines are atomic as far as the
@@ -1754,8 +1837,8 @@ fifo_push(char *pathname)
 {
    char msg[2048];
 
-   // Ignore .snapshot directories unless '+.snapshot' was specified ...
-   if (!DOT_SNAPSHOT && path_is_snapdir(pathname)) {
+   // We usually skip .snapshot and .isi-compliance directories entirely ...
+   if (skip_this_directory(pathname)) {
       sprintf(msg, "NOTICE: Skipping \"%s\"\n", pathname);
       LogMsg(msg);
       return;
@@ -1800,12 +1883,12 @@ fifo_pop(char *pathname)
    // Details, details ...
    p = index(pathname, '\n'); // Remove newline or die ...
    if (p) *p = '\0';
-   else abend("FATAL: Popped FIFO entry ill-formed; has no newline!\n");
+   else abend("FATAL: Popped FIFO entry ill-formed; missing newline!\n");
 
    return(fifo_depth);
 }
 
-/* @@@ SECTION: worker_thread() @@@ */
+// @@@ SECTION: worker_thread() @@@
 
 // worker_thread() - Worker pThread ...
 
@@ -1862,7 +1945,6 @@ worker_thread(void *parg)
 
       // Remain BUSY as long as the FIFO is not empty ...
       while (fifo_pop(WDAT.DirPath)) {
-         path_prefix(WDAT.DirPath, w_id);			// Apply multi-path logic
          if (!WDAT.wlog) worker_log_create(w_id);
          directory_scan(w_id);					// $$$ WORKER'S MISSION $$$
       }
@@ -1876,7 +1958,7 @@ worker_thread(void *parg)
    }
 }
 
-/* @@@ SECTION: manage_workers() @@@ */
+// @@@ SECTION: manage_workers() @@@
 
 // manage_workers() - Manage worker threads. Only called once; this loop lasts for
 // the duration of the 'workers active' phase of pwalk operation. Returns when all
@@ -1968,7 +2050,7 @@ loop:
    }
 }
 
-/* @@@ SECTION: directory_scan() @@@ */
+// @@@ SECTION: directory_scan() @@@
 
 // directory_scan() - Thread-safe directory-scanner.
 
@@ -1995,19 +2077,25 @@ loop:
 //    u_long   st_flags;  /* user defined flags for file */
 //    u_long   st_gen;    /* file generation number */
 // };
+//
+// NOTE: All stat() calls here must use fstatat(2) to employ multipathing.
 
 void
 directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
-{
+{	// +++++ BREAK UP THIS SPAGHETTI CODE: START
    DIR *dir;
    int fd, dfd, dirent_type;
    int i, rc, have_stat, has_acl;
-   int openit;				// Flag that we must open target entry
+   int openit;				// Flag that we must open target entry for READONLY purposes
    int pathlen, namelen;
    struct dirent *pdirent, *result;
    struct stat sb;
    char owner_sid[128], group_sid[128];
    char owner_name[64], group_name[64];
+   int cmp_target_dir_exists;		// In -cmp mode, report all files as 'E' if target dir non-existant
+   char cmp_dir_result_str[32];		// Concatenation of difference letter codes ('[-ET]' or '[MFogsSambC]*') for dir
+   char cmp_file_result_str[32];	// Concatenation of difference letter codes ('[-ET]' or '[MFogsSambC]*') for dir
+   int cmp_dir_reported = FALSE;	// Set when directory cmp line has been reported
    unsigned crc_val;			// +crc results
    char crc_str[16];			// ... formatted as hex
    long long t0, t1, t2;		// For high-resolution timing samples
@@ -2016,12 +2104,12 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    char mode_str[16];			// Formatted mode bits
    char *DirPathName;			// Pointer to WDAT.DirPath
    char *FileName;			// Pointer to dirent's filename
-   char FullPathName[MAX_PATHLEN+1];	// Dirname or filename relative to cwd
+   char RelPathName[MAX_PATHLEN+1];	// Dirname or filename relative to source or target root
    off_t bytes_allocated;		// Per-file allocated space
    unsigned char rbuf[128*1024];	// READONLY read buffer for +crc and +denist (cheap, on-stack, could be better)
    size_t nbytes;			// READONLY bytes read
    struct {				// Per-Directory Statistics (subtotals) ...
-      count_64 NStatCalls;		// Number of calls to lstat() during scans
+      count_64 NStatCalls;		// Number of calls to stat()-family syscalls during scans
       count_64 NStatErrors;		// ... # that were errors
       count_64 NDirs;			// ... # that were directories
       count_64 NFiles;			// ... # that were files
@@ -2039,6 +2127,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    // Interface to pwalk_acls module ...
    int aclstat;        		        // 0 == none, &1 == acl, &2 == trivial, &4 == dacl
    acl4_t acl4;
+   int acl_support = TRUE;		// Platform and directory support ACLs
    char pw_acls_emsg[128] = "";
    int pw_acls_errno = 0;
    char acl4OUTmode;			// 'o' (file) or 'p' (pipe)
@@ -2061,15 +2150,15 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       // klooge: want to skip ENOEXIST, EPERM, EBUSY, but otherwise process non-directory FIFO entry
       rc = errno;
       WS[w_id]->NWarnings += 1;
-      if (Cmd_XML) fprintf(WLOG, "<warning> Cannot diropen() %s (rc=%d) </warning>\n", DirPathName, rc);
-      sprintf(emsg, "WARNING: Worker %d cannot diropen() %s (rc=%d)\n", w_id, DirPathName, rc);
+      if (Cmd_XML) fprintf(WLOG, "<warning> Cannot diropen(%s) (rc=%d) </warning>\n", DirPathName, rc);
+      sprintf(emsg, "WARNING: Worker %d cannot diropen(%s) (rc=%d)\n", w_id, DirPathName, rc);
       LogMsg(emsg);  LogMsg(NULL); // Force-flush these errors
       goto exit_scan; // Skip to summary for this popped entry ...
    }
    WS[w_id]->NDiropens += 1;
 
-   // @@@ GATHER (dir enter): Get directory's metadata - fstat() ...
-   // Get fstat() info on the now-open directory (not counted with the other stat() calls) ...
+   // @@@ GATHER (dir enter): Get directory's metadata - fstatat() ...
+   // Get fstatat() info on the now-open directory (not counted with the other stat() calls) ...
 #if SOLARIS
    dfd = dir->dd_fd;
 #else
@@ -2077,7 +2166,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 #endif
    ns_stat_s[0]='\0';
    if (TSTAT) t0 = gethrtime();
-   fstat(dfd, &sb);		// klooge: assuming success because it's open
+   fstat(dfd, &sb);		// klooge: assuming success because it's open	+++++
    if (TSTAT) { t1 = gethrtime(); ns_stat = t1 - t0; sprintf(ns_stat_s," (%lldus) ", ns_stat/1000); }
    if (VERBOSE > 2) { fprintf(WLOG, "@stat\n"); fflush(WLOG); }
    format_mode_bits(mode_str, sb.st_mode);
@@ -2087,14 +2176,26 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    DS.NBytesNominal = sb.st_size;
    DS.NBytesAllocated = bytes_allocated = sb.st_blocks * ST_BLOCK_SIZE;
 
+   // @@@ GATHER/REPORT (dir enter): For -cmp mode ...
+   // If TARGET dir does not exist, save scan time by just reporting 'E' for all dir contents.
+   if (Cmd_CMP) {
+      cmp_source_target(w_id, DirPathName, &sb, cmp_dir_result_str);
+      cmp_target_dir_exists = (strpbrk(cmp_dir_result_str, "ET!") == NULL);	// 'E' or 'T' or '!'  means 'no'
+      if (strcmp(cmp_dir_result_str, "-")) {		// Maybe defer this until a file difference is found
+         if (ftell(WDAT.wlog)) fprintf(WLOG, "\n");	// Blank line before each new directory
+         fprintf(WLOG, "@ %s %s\n", cmp_dir_result_str, DirPathName);
+         cmp_dir_reported = TRUE;
+      }
+   }
+
    // @@@ GATHER: Get directory ACL for inheritance reasons ...
-   // directory_acl = pwalk_acl_get_fd(dfd);	// #####
+   // directory_acl = pwalk_acl_get_fd(dfd);	// DEVELOPMENTAL for +rm_acls
 
    // @@@ GATHER/PROCESS (dir enter): ACLs ...
 #if defined(__ONEFS__)
    has_acl = (sb.st_flags & SF_HASNTFSACL);
 #else
-   has_acl = 0;		// It's a flag on OneFS, but another metadata call elsewhere (for later)
+   has_acl = 0;		// It's a flag on OneFS, but another metadata call otherwise (for later)
 #endif
 #if PWALK_ACLS		// POSIX-to-NFS4 ACL logic (Linux only) ...
    ns_getacl_s[0]='\0';
@@ -2102,7 +2203,9 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
       pw_acl4_get_from_posix_acls(DirPathName, 1, &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
       if (TSTAT) { t2 = gethrtime(); ns_getacl = t2 - t1; sprintf(ns_getacl_s," (%lldus) ", ns_getacl/1000); }
-      if (pw_acls_errno) {		// Log both to main log and worker's log ...
+      if (pw_acls_errno == EOPNOTSUPP) {	// If no support on directory, no point asking for files!
+         acl_support = FALSE;
+      } else if (pw_acls_errno) {		// Log both to main log and worker's log ...
          DS.NWarnings += 1;
          sprintf(emsg, "WARNING: \"%s\": %s [%d - \"%s\"]\n", DirPathName, pw_acls_emsg, pw_acls_errno, strerror(pw_acls_errno));
          LogMsg(emsg); LogMsg(NULL);
@@ -2112,13 +2215,12 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
             fprintf(WLOG, "%s", emsg);
       }
       if (aclstat) {
-         strcat(mode_str, "+");
+         has_acl = TRUE;
          DS.NACLs += 1;			// Only count *directories* HERE, when we pop them, not when they are pushed
       } else strcat(mode_str, ".");
    }
-#else
-   if (has_acl && P_MODE) strcat(mode_str, "+");	// Actually only works in OneFS
 #endif // PWALK_ACLS
+   if (has_acl && P_MODE) strcat(mode_str, "+");
 
    // @@@ GATHER (dir enter): Owner name, group name, owner_sid, group_sid ...
    get_owner_group(&sb, owner_name, group_name, owner_sid, group_sid);
@@ -2138,7 +2240,8 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       fprintf(WLOG, "<path> %lld%s%s %u %lld %s%s </path>\n",
          bytes_allocated, (P_MODE ? " " : ""), mode_str, sb.st_nlink, (long long) sb.st_size, DirPathName, ns_stat_s);
    } else if (Cmd_LS) {
-      fprintf(WLOG, "\n%s:\n", DirPathName);
+      if (ftell(WLOG)) fprintf(WLOG, "\n");
+      fprintf(WLOG, "%s:\n", DirPathName);
    } else if (Cmd_FIXTIMES) {
       // fprintf(WLOG, "# \"%s\":\n", DirPathName);
    } 
@@ -2150,22 +2253,22 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       rc = onefs_rm_acls(dfd, DirPathName, &sb, (char *) &rc_msg);
       if (rc < 0) {
          WS[w_id]->NWarnings += 1;
-         sprintf(emsg, "WARNING: onefs_rm_acls(\"%s\") for \"%s\"\n", rc_msg, FullPathName);
+         sprintf(emsg, "WARNING: onefs_rm_acls(\"%s\") for \"%s\"\n", rc_msg, RelPathName);
          LogMsg(emsg);
       } else if (rc > 0) {
          WS[w_id]->NACLs += 1;
-         sprintf(emsg, "@ %s \"%s\"\n", rc_msg, FullPathName); fputs(emsg, WLOG);
+         sprintf(emsg, "@ %s \"%s\"\n", rc_msg, RelPathName); fputs(emsg, WLOG);
       }
    }
 #endif
 
-   // @@@ DIRECTORY SCAN LOOP: push dirs s we go ...
-
+   // @@@ DIRECTORY SCAN LOOP (begin): push dirs as we go ...
+scandirloop:
    // Copy DirPath to buffer in which we will iteratively append filenames from dirents ...
-   strcpy(FullPathName, DirPathName);
-   pathlen = strlen(FullPathName);
-   FullPathName[pathlen++] = PATHSEPCHAR;
-   FullPathName[pathlen] = '\0';
+   strcpy(RelPathName, DirPathName);
+   pathlen = strlen(RelPathName);
+   RelPathName[pathlen++] = PATHSEPCHR;
+   RelPathName[pathlen] = '\0';
    pdirent = WDAT.Dirent; // Convenience pointer
 
    // NOTE: readdir_r() is the main potential metadata-reading LATENCY HOTSPOT
@@ -2176,7 +2279,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       if (strcmp(FileName, ".") == 0) continue;
       if (strcmp(FileName, "..") == 0) continue;
 
-      // Construct FullPathName from current directory entry (dirent) ...
+      // Construct RelPathName from current directory entry (dirent) ...
       // struct dirent { // (from OSX; Solaris has no d_namlen)
       //    ino_t      d_ino;                /* file number of entry */
       //    __uint16_t d_reclen;             /* length of this record */
@@ -2199,10 +2302,10 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
          LogMsg(emsg); LogMsg(NULL);
          continue;
       }
-      strcpy(FullPathName+pathlen, FileName);
+      strcpy(RelPathName+pathlen, FileName);
 
-      // @@@ GATHER (dirent): fstat() info ...
-      // Get FullPathName's metadata via stat() or perhaps just from the dirent's d_type ...
+      // @@@ GATHER (dirent): fstatat() info ...
+      // Get RelPathName's metadata via stat() or perhaps just from the dirent's d_type ...
       // At this juncture, we MUST know if the dirent is a directory or not, so we can decide when
       // to recurse on directories. Over NFS, this requires a stat() call, but on a local filesystem,
       // we could use the current dirent->d_type value for this purpose to accelerate treewalk speed.
@@ -2214,21 +2317,21 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       if (Cmd_AUDIT && 0) {		// DORMANT/EXPERIMENTAL: FAST TREEWALK W/O STAT() - FUTURE
          // Avoid stat() call, require d_type ...
          if (pdirent->d_type == DT_UNKNOWN) {
-            fprintf(WLOG, "ERROR: DT_UNKNOWN %s\n", FullPathName);
+            fprintf(WLOG, "ERROR: DT_UNKNOWN %s\n", RelPathName);
             continue;
          }
          if (pdirent->d_type == DT_REG || pdirent->d_type == DT_DIR) dirent_type = pdirent->d_type;
          else dirent_type = DT_UNKNOWN;
       } else {
          if (TSTAT) t0 = gethrtime();
-         rc = lstat(FullPathName, &sb);
+         rc = fstatat(SOURCE_DFD(w_id), RelPathName, &sb, AT_SYMLINK_NOFOLLOW);
          if (TSTAT) { t1 = gethrtime(); sprintf(ns_stat_s," (%lldus) ", (t1-t0)/1000); }
          DS.NStatCalls += 1;
          if (rc) {							// @@ <warning> ...
             DS.NStatErrors += 1;
             WS[w_id]->NWarnings += 1;
-            if (Cmd_XML) fprintf(WLOG, "<warning> Cannot lstat() %s (rc=%d) </warning>\n", FullPathName, rc);
-            sprintf(emsg, "WARNING: Cannot lstat() %s (rc=%d)\n", FullPathName, rc);
+            if (Cmd_XML) fprintf(WLOG, "<warning> Cannot stat(%s) (rc=%d) </warning>\n", RelPathName, rc);
+            sprintf(emsg, "WARNING: Cannot stat(%s) (rc=%d)\n", RelPathName, rc);
             LogMsg(emsg);  LogMsg(NULL); // Force-flush these errors
             continue;
          }
@@ -2239,7 +2342,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
          else dirent_type = DT_UNKNOWN;
       }
 
-      // @@@ GATHER (dirent): Process direct's ACL ...
+      // @@@ GATHER (dirent): Process dirent's ACL ...
 #if defined(__ONEFS__)
       has_acl = (sb.st_flags & SF_HASNTFSACL);
 #else
@@ -2248,10 +2351,10 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 #if PWALK_ACLS // Linux ACL-related logic for a <file> ....
       ns_getacl_s[0]='\0';
       acl4.n_aces = 0;
-      if (P_ACL_PLUS || Cmd_XACLS || Cmd_WACLS) {
+      if (acl_support && (P_ACL_PLUS || Cmd_XACLS || Cmd_WACLS)) {
          assert(have_stat);		// klooge: primitive insurance
          // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
-         pw_acl4_get_from_posix_acls(FullPathName, S_ISDIR(sb.st_mode), &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
+         pw_acl4_get_from_posix_acls(RelPathName, S_ISDIR(sb.st_mode), &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
          if (TSTAT) { t2 = gethrtime(); ns_getacl = t2 - t1; sprintf(ns_getacl_s," (%lldus) ", ns_getacl/1000); }
          if (pw_acls_errno) {		// Log both to main log and worker's log ...
             DS.NWarnings += 1;
@@ -2264,13 +2367,12 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
             continue;
          }
          if (aclstat) {
-            strcat(mode_str, "+");
+            has_acl = TRUE;
             if (!S_ISDIR(sb.st_mode)) DS.NACLs += 1;	// Only count *directories* when we pop them (ie: not here) ...
          } else strcat(mode_str, ".");
       }
-#else
-      if (has_acl && P_MODE) strcat(mode_str, "+");	// Actually only works in OneFS
 #endif // PWALK_ACLS
+      if (has_acl && P_MODE) strcat(mode_str, "+");	// Actually only works in OneFS
 
       // @@@ GATHER (dirent): Space accounting information ... and PUSH any directories encountered ...
       if (dirent_type == DT_DIR) {
@@ -2279,8 +2381,8 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
          // NOTE: At (depth == 0), we will assume the directory ACLs are to be preserved.
          // As soon as we PUSH this directory, some other worker may POP it, and it will not
          // do ACL inheritance operations correctly if we have not fixed the directory's ACL first.
-         //onefs_acl_inherit(CurrentDirectoryACL, -1, FullPathName, isdir, depth);	// #####
-         fifo_push(FullPathName);
+         //onefs_acl_inherit(CurrentDirectoryACL, -1, RelPathName, isdir, depth);	// #####
+         fifo_push(RelPathName);
          // NOTE: To avoid multiple-counting, we only count the nominal directory size ONCE; when we pop it
          sb.st_blocks = 0;
          sb.st_size = 0;
@@ -2314,9 +2416,9 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 
       // OK, so we need to do an open() - NOT following links ...
       // NOTE: OneFS has O_OPENLINK to explcitly permit opening a symlink!
-      if ((fd = open(FullPathName, O_RDONLY|O_NOFOLLOW|O_OPENLINK, 0)) < 0) {
+      if ((fd = openat(SOURCE_DFD(w_id), RelPathName, O_RDONLY|O_NOFOLLOW|O_OPENLINK, 0)) < 0) {
          WS[w_id]->READONLY_Errors += 1;
-         sprintf(emsg, "ERROR: Cannot READONLY open() \"%s\" errno=%d\n", FullPathName, rc);
+         sprintf(emsg, "ERROR: Cannot READONLY open() \"%s\" errno=%d\n", RelPathName, rc);
          LogMsg(emsg);
          goto outputs;
       }
@@ -2337,15 +2439,15 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 #if defined(__ONEFS__)		// OneFS-specific features ...
       // if (!PWdryrun) pwalk_acl_modify(fd, directory_acl, S_ISDIR(sb.st_mode));	// #####
       if (Cmd_RM_ACLS) {
-         rc = onefs_rm_acls(fd, FullPathName, &sb, (char *) &rc_msg);
+         rc = onefs_rm_acls(fd, RelPathName, &sb, (char *) &rc_msg);
          // klooge: add counters for acls modified or removed (rc == 1 or 2, respectively)
          if (rc < 0) {
             WS[w_id]->NWarnings += 1;
-            sprintf(emsg, "WARNING: onefs_rm_acls(\"%s\") for \"%s\"\n", rc_msg, FullPathName);
+            sprintf(emsg, "WARNING: onefs_rm_acls(\"%s\") for \"%s\"\n", rc_msg, RelPathName);
             LogMsg(emsg);
          } else if (rc > 0) {
             WS[w_id]->NACLs += 1;
-            sprintf(emsg, "@ %s \"%s\"\n", rc_msg, FullPathName); fputs(emsg, WLOG);
+            sprintf(emsg, "@ %s \"%s\"\n", rc_msg, RelPathName); fputs(emsg, WLOG);
          }
       }
       if (PWget_MASK & PWget_SD) {
@@ -2379,31 +2481,42 @@ outputs:
       //    (UL(sb.st_mtime) != UL(sb.st_ctime)) ? " NOTE: M!=C" : ""
 #endif
 
-      // @@@ OUTPUT: Handle primary mutually-exclusive operating modes ...
+      // @@@ OUTPUT (primary modes): Mutually-exclusive operating modes ...
       if (Cmd_SELECT && !selected(FileName, &sb)) {	// No output!
          ;
-      } else if (Cmd_LS) {			// -ls
-         fprintf(WLOG, "%lld%s%s %u %lld %s%s%s\n",
-            bytes_allocated, (P_MODE ? " " : ""), mode_str, sb.st_nlink, (long long) sb.st_size, FileName,
-            ns_stat_s, crc_str);
+      } else if (Cmd_LS) {		// -ls
+         fprintf(WLOG, "%s %u %lld %s%s%s\n",
+            (P_MODE ? mode_str : ""), sb.st_nlink, (long long) sb.st_size, FileName, ns_stat_s, crc_str);
       } else if (Cmd_XML) {		// -xml
-         fprintf(WLOG, "<file> %lld%s%s %u %lld %s%s%s </file>\n",
-            bytes_allocated, (P_MODE ? " " : ""), mode_str, sb.st_nlink, (long long) sb.st_size, FileName,
-            ns_stat_s, crc_str);
+         fprintf(WLOG, "<file> %s %u %lld %s%s%s </file>\n",
+            (P_MODE ? mode_str : ""), sb.st_nlink, (long long) sb.st_size, FileName, ns_stat_s, crc_str);
+      } else if (Cmd_CMP) {		// -cmp
+         if (cmp_target_dir_exists)
+            cmp_source_target(w_id, RelPathName, &sb, cmp_file_result_str);
+         else // File CANNOT exist!
+            strcpy(cmp_file_result_str, "E");
+         if (strcmp(cmp_file_result_str, "-")) {		// Only report differences
+            if (!cmp_dir_reported) {				// If we deferred reporting directory, do it now
+               if (ftell(WDAT.wlog)) fprintf(WLOG, "\n");	// blank line before each new directory
+               fprintf(WLOG, "@ %s %s\n", cmp_dir_result_str, DirPathName);
+               cmp_dir_reported = TRUE;
+            }
+            fprintf(WLOG, "%c %s %s\n", mode_str[0], cmp_file_result_str, FileName);
+         }
       } else if (Cmd_AUDIT) {		// -audit
 #if PWALK_AUDIT // OneFS only
-         pwalk_audit_file(FullPathName, &sb, crc_val, w_id);
+         pwalk_audit_file(RelPathName, &sb, crc_val, w_id);
 #else
          abend("FATAL: -audit not supported");
 #endif // PWALK_AUDIT
       } else if (Cmd_FIXTIMES) {	// -fixtimes
-         pwalk_fix_times(FileName, FullPathName, &sb, w_id);
+         pwalk_fix_times(FileName, RelPathName, &sb, w_id);
       } else if (Cmd_CSV) {		// -csv= (DEVELOPMENTAL: Temporary placeholder code)
          if (Cmd_SELECT) {
-            fprintf(WLOG, "\"%s\"\n", FullPathName);
+            fprintf(WLOG, "\"%s\"\n", RelPathName);
          } else {			// klooge: SHOULD BE call to reporting module
             fprintf(WLOG, "%u,%s,%s,%u,%s,%s,\"%s\"\n",
-               sb.st_uid, owner_name, owner_sid, sb.st_gid, group_name, group_sid, FullPathName);
+               sb.st_uid, owner_name, owner_sid, sb.st_gid, group_name, group_sid, RelPathName);
          }
       }
 
@@ -2416,35 +2529,35 @@ outputs:
       if (acl4.n_aces) {
          if (Cmd_WACLS) {
             if (!WDAT.WACLS_PIPE) ; // === in-process
-            pw_acl4_fwrite_binary(&acl4, FullPathName, &(WDAT.WACLS_PIPE), acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
+            pw_acl4_fwrite_binary(&acl4, RelPathName, &(WDAT.WACLS_PIPE), acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
          }
          if (Cmd_XACLS & Cmd_XACLS_BIN) {
             if (!WDAT.XACLS_BIN_FILE) worker_aux_create(w_id, &(WDAT.XACLS_BIN_FILE), "acl4bin");
-            pw_acl4_fwrite_binary(&acl4, FullPathName, &(WDAT.XACLS_BIN_FILE), acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
+            pw_acl4_fwrite_binary(&acl4, RelPathName, &(WDAT.XACLS_BIN_FILE), acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
          }
          if (Cmd_XACLS & Cmd_XACLS_CHEX) {
             if (!WDAT.XACLS_CHEX_FILE) worker_aux_create(w_id, &(WDAT.XACLS_CHEX_FILE), "acl4chex");
-            pw_acl4_fprintf_chex(&acl4, FullPathName, &sb, WDAT.XACLS_CHEX_FILE);
+            pw_acl4_fprintf_chex(&acl4, RelPathName, &sb, WDAT.XACLS_CHEX_FILE);
          }
          if (Cmd_XACLS & Cmd_XACLS_NFS) {
             if (!WDAT.XACLS_NFS_FILE) worker_aux_create(w_id, &(WDAT.XACLS_NFS_FILE), "acl4nfs");
-            pw_acl4_fprintf_nfs4_setfacl(&acl4, FullPathName, WDAT.XACLS_NFS_FILE);
+            pw_acl4_fprintf_nfs4_setfacl(&acl4, RelPathName, WDAT.XACLS_NFS_FILE);
          }
          if (Cmd_XACLS & Cmd_XACLS_ONEFS) {
             if (!WDAT.XACLS_ONEFS_FILE) worker_aux_create(w_id, &(WDAT.XACLS_ONEFS_FILE), "acl4onefs");
-            pw_acl4_fprintf_onefs(&acl4, FullPathName, &sb, WDAT.XACLS_ONEFS_FILE);
+            pw_acl4_fprintf_onefs(&acl4, RelPathName, &sb, WDAT.XACLS_ONEFS_FILE);
          }
       }
 #endif // PWALK_ACLS
    }
 
 exit_scan:
-   // @@@ End-of-directory processing ...
+   // @@@ DIRECTORY SCAN LOOP (end): Subtotals & such ...
    if (dir != NULL) {
       rc = closedir(dir);
       if (VERBOSE > 2) { fprintf(WLOG, "@closedir rc=%d\n", rc); fflush(WLOG); }
 
-      // @@@ Aggregate per-directory statistics (DS) to per-worker statistics (WS[w_id]) ...
+      // @@@ MATH (dir end): Aggregate per-directory statistics (DS) to per-worker statistics (WS[w_id]) ...
       // NOTE: Before pwalk exists, it will sum all per-worker statistics to form its global statistics (GS).
       WS[w_id]->NStatCalls += DS.NStatCalls;
       WS[w_id]->NStatErrors += DS.NStatErrors;
@@ -2461,38 +2574,89 @@ exit_scan:
             DS.NFiles, DS.NDirs, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
          fprintf(WLOG, "</directory>\n");
       } else if (Cmd_LS) {
-         fprintf(WLOG, "total %llu files %llu dirs %llu other %llu errors %llu allocated %llu nominal\n",
+         fprintf(WLOG, "total: %llu files %llu dirs %llu other %llu errors %llu allocated %llu nominal\n",
             DS.NFiles, DS.NDirs, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
       }
    }
-
-   // Flush worker's output at end of each directory ...
-   fflush(WLOG);
-}
+   fflush(WLOG);	// Flush worker's output at end of each directory ...
+   LogMsg(NULL);	// ... also force main pwalk.log flush with possible progress report
+}	// +++++ BREAK UP THIS SPAGHETTI CODE: END
 
-/* @@@ SECTION: Top-level pwalk logic & main() @@@ */
+// @@@ SECTION: Top-level pwalk logic & main() @@@
 
-// process_cmdopts() - Process command-line options w/ rudimentary error-checking ...
+// check_maxfiles() - Spot check max open file limit
 
 void
-process_cmdopts(int argc, char *argv[])
+check_maxfiles(void)
+{
+   struct rlimit rlimit;
+
+   // This is just a close APPROXIMATION of what we'll need for concurrently-open files ...
+   //
+   // Per-worker -> (6*N_WORKERS) + (Cmd_AUDIT ? N_WORKERS : 0)
+   //	#N_WORKERS - READONLY file open
+   //	#N_WORKERS – Primary output (.ls, .xml, .audit, .cmp, .fix, .out)
+   //	#4*N_WORKERS – ACL outputs (including –wacls= pipe)
+   //	-audit #N_WORKERS – Python pipe
+   // Per-process (6 + N_SOURCE_PATHS + N_TARGET_PATHS)
+   //	#N_SOURCE_PATHS + #N_TARGET_PATHS - SOURCE and TARGET paths
+   //	#1 - .log file
+   //	#2 - .fifo (push and pop handles)
+   //	#3 - stdin, stdout, stderr
+   // Transient
+   //	#1 - .tally
+   //	#1 - -paths=
+
+   // What might we need?
+   MAX_OPEN_FILES = (6*N_WORKERS) + (Cmd_AUDIT ? N_WORKERS : 0) + (6 + N_SOURCE_PATHS + N_TARGET_PATHS);
+
+   // Do we have enough?
+   assert (getrlimit(RLIMIT_NOFILE, &rlimit) == 0);
+   if (MAX_OPEN_FILES <= rlimit.rlim_cur) return;	// No worries!
+
+   // Can we get enough?
+   if (MAX_OPEN_FILES > rlimit.rlim_max) {		// No way!
+      fprintf(Flog, "ERROR: MAX_OPEN_FILES (%d) > RLIMIT_NOFILE rlim_max (%llu)\n", MAX_OPEN_FILES, rlimit.rlim_max);
+      exit(-1);
+   }
+
+   // Can we increase the current limit?
+   // DEBUG: fprintf(Flog, "NOTICE: setrlimit %llu / %d / %llu\n", rlimit.rlim_cur, MAX_OPEN_FILES, rlimit.rlim_max);
+   rlimit.rlim_cur = MAX_OPEN_FILES;
+   if (setrlimit(RLIMIT_NOFILE, &rlimit)) {		// Nope!
+      fprintf(Flog, "ERROR: Not enough file handles! (MAX_OPEN_FILES=%d)\n", MAX_OPEN_FILES);
+      exit(-1);
+   }
+}
+
+// process_arglist() - Process command-line options w/ rudimentary error-checking ...
+
+void
+process_arglist(int argc, char *argv[])
 {
    char *arg;
    char msg[256];
    char *mx_options, *p;
-   int narg, npaths, noptions;
+   int i, narg, nmodes, badarg = FALSE;
+   enum { none, relative, absolute } dt_arg, dt_mode = none;
+   int ndirargs = 0;
 
    // @@@ Command-line argument processing ...
-   for (npaths=0,narg=1; narg < argc; narg++) {
+   for (narg=1; narg < argc; narg++) {
       arg = argv[narg];
       if (sscanf(arg, "-dop=%d", &N_WORKERS) == 1) {
          continue;
       } else if (strncmp(arg, "-paths=", strlen("-paths=")) == 0) {
          parse_paths(arg+strlen("-paths="));
-      } else if (strncmp(arg, "-shadow=", strlen("-shadow=")) == 0) {
-         SHADOW_DIR = malloc(strlen(arg));
-         strcpy(SHADOW_DIR, arg+strlen("-shadow="));
-         strcat(SHADOW_DIR, "/");
+      } else if (strncmp(arg, "-source=", strlen("-source=")) == 0) {
+         SOURCE_ARG = malloc(strlen(arg));
+         strcpy(SOURCE_ARG, arg+strlen("-source="));
+      } else if (strncmp(arg, "-target=", strlen("-target=")) == 0) {
+         TARGET_ARG = malloc(strlen(arg));
+         strcpy(TARGET_ARG, arg+strlen("-target="));
+      } else if (strncmp(arg, "-output=", strlen("-output=")) == 0) {
+         OUTPUT_ARG = malloc(strlen(arg));
+         strcpy(OUTPUT_ARG, arg+strlen("-output="));
 #if PWALK_AUDIT // OneFS only
       } else if (strcmp(arg, "-audit") == 0) {		// Special modes ...
          Cmd_AUDIT = 1;
@@ -2508,12 +2672,13 @@ process_cmdopts(int argc, char *argv[])
          Cmd_LS = 1;
       } else if (strcmp(arg, "-xml") == 0) {
          Cmd_XML = 1;
-      } else if (strcmp(arg, "-cmp") == 0) {
+      } else if (strcmp(arg, "-cmp") == 0 || strncmp(arg, "-cmp=", 5) == 0) {
+         if (strncmp(arg, "-cmp=", 5) == 0) cmp_arg_parse(arg+5);
          Cmd_CMP = 1;
       } else if (strcmp(arg, "-fix_times") == 0) {
          Cmd_FIXTIMES = 1;
-      } else if (strncmp(arg, "-csv=", 5) == 0) {
-         pwalk_report_parse(arg+5);
+      } else if (strncmp(arg, "-csv=", 5) == 0) {	// DEVELOPMENTAL ====
+         csv_pfile_parse(arg+5);
          Cmd_CSV = 1;
       } else if (strcmp(arg, "-v") == 0) {		// Verbosity ...
          VERBOSE += 1;
@@ -2550,54 +2715,132 @@ process_cmdopts(int argc, char *argv[])
          Cmd_XACLS |= Cmd_XACLS_ONEFS;
 #endif // PWALK_ACLS
       } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
-         DOT_SNAPSHOT = 1;
+         SKIP_DOT_SNAPSHOT = 0;
       } else if (strcmp(arg, "+tstat") == 0) {		// also add timed stats
          TSTAT = 1;
       } else if (strcmp(arg, "-dryrun") == 0) {		// Modifiers ...
          PWdryrun = 1;
-      } else if (strncmp(arg, "-cd=", 4) == 0) {
-         CD_ARG = arg + 4;
       } else if (strcmp(arg, "-gz") == 0) {
          GZ_OUTPUT = 1;
       } else if (strcmp(arg, "-pmode") == 0) {
          P_MODE = 0;
       } else if (*arg == '-' || *arg == '+') {		// Unknown +/- option ...
          usage();
-      } else { // Everything else assumed to be a pathname ...
+      } else { // Everything else assumed to be a <directory> arg ...
          // NOTE: our FIFO is only created AFTER all args are validated, so we can't push these yet!
-         npaths++;
+         ndirargs++;
+         // Enforce that all <directory> args *must* either be absolute or relative ...
+         dt_arg = (*arg == PATHSEPCHR) ? absolute : relative;
+         if (dt_mode == none) {
+            dt_mode = dt_arg; 
+         } else if (dt_arg != dt_mode) {
+            fprintf(Flog, "ERROR: <directory> args must all be either absolute or relative!\n");
+            exit(-1);
+         }
       }
    }
 
-   // @@@ Command-line argument sanity checking ...
+   // @@@ Resolve all multipath-related restrictions and related sanity checks ...
+
+   // When <directory> args are absolute, neither -source nor -path= [source] paths can be specified!
+   if (dt_mode == absolute) {
+      if (N_SOURCE_PATHS > 0 || SOURCE_ARG) {
+         fprintf(Flog, "ERROR: Cannot specify -source= or -ipaths= with absolute paths!\n");
+         exit(-1);
+      } else {
+         SOURCE_ARG = PATHSEPSTR;	// root ('/') is the implicit -source= parameter in absolute mode
+      }
+   }
+
+   // Apply -source= parameter if -paths= does not conflict ...
+   if (SOURCE_ARG) {
+      if (N_SOURCE_PATHS > 0) {
+         fprintf(Flog, "ERROR: Cannot specify both -source= and -ipaths= [source] paths!\n");
+         exit(-1);
+      } else {
+         SOURCE_PATHS[0] = SOURCE_ARG;	// Either implied "/" or -source= arg
+         N_SOURCE_PATHS = 1;
+      }
+   }
+
+   // Iff no -source= or -paths= [source] paths specified, default to CWD (".").
+   if (N_SOURCE_PATHS < 1) {	
+      SOURCE_PATHS[0] = ".";
+      N_SOURCE_PATHS = 1;
+   }
+
+   // Apply -target= parameter if -paths= does not conflict ...
+   if (TARGET_ARG) {
+      if (N_TARGET_PATHS > 0) {
+         fprintf(Flog, "ERROR: Cannot specify both -target= and -ipaths= [target] paths!\n");
+         exit(-1);
+      } else {
+         TARGET_PATHS[0] = TARGET_ARG;
+         N_TARGET_PATHS = 1;
+      }
+   }
+
+   if (Cmd_CMP && (N_TARGET_PATHS < 1)) {
+      fprintf(Flog, "ERROR: '-cmp' requires '-target=' or [target] paths from '-paths='!\n");
+      exit(-1);
+   }
+
+   // Check if we'll be able to open all the files we need ...
+   // NOTE: This check must follow -paths= parsing, but before multipaths are opened.
+   check_maxfiles();
+
+   // BIG MOMENT HERE: Open all the source and target root paths, or die trying ...
+   for (i=0; i<N_SOURCE_PATHS; i++)
+      setup_root_path(SOURCE_PATHS[i], &SOURCE_DFDS[i], &SOURCE_INODE[i]);	// exits on failure!
+   for (i=0; i<N_TARGET_PATHS; i++)
+      setup_root_path(TARGET_PATHS[i], &TARGET_DFDS[i], &TARGET_INODE[i]);	// exits on failure!
+
+   // Sanity check all equivalent paths must resolve to same inode number, as they will when they
+   // all represent mounts of the same remote directory.  When mount points are NOT mounted, they
+   // will return distinct inode numbers from the host system.
+   if (N_SOURCE_PATHS > 1)		// must all point to same place!
+      for (i=1; i<N_SOURCE_PATHS; i++)
+         if (SOURCE_INODE[i] != SOURCE_INODE[0])
+            { fprintf(Flog, "ERROR: Not all source paths represent same inode! Check mounts?\n"); exit(-1); }
+
+   if (N_TARGET_PATHS > 1)		// must all point to same place!
+      for (i=1; i<N_TARGET_PATHS; i++)
+         if (TARGET_INODE[i] != TARGET_INODE[0])
+            { fprintf(Flog, "ERROR: Not all target paths represent same inode! Check mounts?\n"); exit(-1); }
+
+   if ((N_TARGET_PATHS > 0) && TARGET_INODE[0] == SOURCE_INODE[0])
+         { fprintf(Flog, "ERROR: source and target paths cannot point to the same directory!\n"); exit(-1); }
+
+   // @@@ Other argument sanity checks ...
 
    if (N_WORKERS < 0 || N_WORKERS > MAX_WORKERS) {
       fprintf(Flog, "ERROR: -dop=<N> must be on the range [1 .. %d]!\n", MAX_WORKERS);
-      exit(-1);
+      badarg = TRUE;
    }
 
-   if (Cmd_CMP && !SHADOW_DIR) {
-      fprintf(Flog, "ERROR: '-cmp' requires '-shadow=' arg!\n");
-      exit(-1);
-   }
-
+   // Mutual exclusion of primary modes ...
    mx_options = "[ ls | xml | fix_mtime | cmp | audit | csv ]";	// Mutually Exclusive options
-   noptions = Cmd_LS + Cmd_XML + Cmd_FIXTIMES + Cmd_CMP + Cmd_AUDIT + Cmd_CSV;
-   if (noptions > 1) {
+   nmodes = Cmd_LS + Cmd_XML + Cmd_FIXTIMES + Cmd_CMP + Cmd_AUDIT + Cmd_CSV;
+   if (nmodes > 1) {
       fprintf(Flog, "ERROR: Only one of %s allowed!\n", mx_options);
-      exit(-1);
+      badarg = TRUE;
    }
 
-   noptions += Cmd_DENIST + Cmd_TALLY + Cmd_XACLS + Cmd_WACLS + Cmd_RM_ACLS;
-   if (noptions < 1) usage();		// nothing to do
+   nmodes += Cmd_DENIST + Cmd_TALLY + Cmd_XACLS + Cmd_WACLS + Cmd_RM_ACLS;
+   if (nmodes < 1) usage();		// nothing to do
 
    if (Cmd_WACLS && (strlen(WACLS_CMD) < 5)) {	// crude and arbitrary
       fprintf(Flog, "ERROR: '+wacls=' requires '<command>' value!\n");
-      exit(-1);
+      badarg = TRUE;
    }
 
-   if (npaths < 1)							// Most basic check is last
-      usage();
+   if (ndirargs < 1) {							// Most basic check is last
+      fprintf(Flog, "ERROR: No <directory> arguments passed!\n");
+      badarg = TRUE;
+   }
+
+   if (badarg)
+      exit(-1);
 }
 
 int
@@ -2651,10 +2894,12 @@ main(int argc, char *argv[])
    // Initialize global mutexes ...
    init_main_mutexes();
 
-   // Process command-line options (excluding root paths) ...
-   process_cmdopts(argc, argv);
+   // Process command-line options ...
+   // NOTE: Up through argument validation, errors go to stderr ...
+   process_arglist(argc, argv);
 
    // Create output dir (OPATH), pwalk.log (Flog), and pwalk.fifo ...
+   // NOTE: After this, errors all go to Flog rather than stderr ...
    init_main_outputs();
 
    // Log command-line recap ...
@@ -2666,19 +2911,16 @@ main(int argc, char *argv[])
    fprintf(Flog, "NOTICE: cwd = %s\n", CWD);
    fprintf(Flog, "NOTICE: output = %s\n", OPATH);
 
-   if (CD_ARG) {	// Iff -cd= argument was specified, chdir() there for all that follows ...
-      if (chdir(CD_ARG)) {
-         emsg = malloc(8192);
-         sprintf(emsg, "Cannot cd to \"%s\"\n", CD_ARG);
-         abend(emsg);
-      }
-      fprintf(Flog, "NOTICE: -cd = %s\n", CD_ARG);
-   }
+   for (i=0; i<N_SOURCE_PATHS; i++)
+      fprintf(Flog, "NOTICE: source[%d] = %s\n", i, SOURCE_PATHS[i]);
+   for (i=0; i<N_TARGET_PATHS; i++)
+      fprintf(Flog, "NOTICE: target[%d] = %s\n", i, TARGET_PATHS[i]);
 
    (void) uname(&uts);
    fprintf(Flog, "NOTICE: utsname = %s (%s %s %s %s)\n",
       uts.nodename, uts.sysname, uts.release, uts.version, uts.machine);
    fprintf(Flog, "NOTICE: pid = %d\n", getpid());
+   fprintf(Flog, "NOTICE: MAX_OPEN_FILES = %d\n", MAX_OPEN_FILES);
 
    for (i=1; i < argc; i++)	// Push initial command-line <directory> args to FIFO ...
       if (*argv[i] != '-' && *argv[i] != '+') {
@@ -2742,7 +2984,7 @@ main(int argc, char *argv[])
 
    // @@@ OUTPUT (log): -audit decoder ring to log file ...
 #if PWALK_AUDIT // OneFS only
-   if (Cmd_AUDIT) pwalk_audit_keys();
+   if (Cmd_AUDIT) log_audit_keys();
 #endif // PWALK_AUDIT
 
    // @@@ OUTPUT (log): OS-level pwalk process stats ...

@@ -15,6 +15,7 @@ tool for various operations on highly-scaled filesystems, including but not limi
 	- high-speed parameter-driven metadata extraction and formatting
 	- bulk data operations (e.g. bulk file comparisons)
 	- data migration aid (e.g. POSIX-to-NFS4 ACL migration)
+	- file heirarchy comparisons with -cmp
 	- being a framework for custom-coded tasks requiring a high-speed treewalker foundation
 
 pwalk code management was moved to Github as a private project on September 29, 2017.  It is not
@@ -48,3 +49,20 @@ Documentation for pwalk is spread across a number of documents;
 
 Both the code and the documentation are maintained in a perpetual state of being incomplete
 and begging for some cleanup and consolidation work!
+
+*** Distribution Format ***
+
+pwalk is often distributed as an E-Mail attachment in a uuencoded gzip'ed tarball format
+('bundle') which has been designed to get past most E-Mail filters. The C-shell script
+'uu-export.csh' creates these bundles in the directory superior to this directory, with
+a name than includes a timestamp of when the bundle was created.
+
+To unpack this format, the recipient should take the following steps;
+
+	- Save the E-Mail attachment to a file, e.g. 'pwalk-master_20180312@161642_uu.allow'
+	- Edit the file to remove the first line
+	- uudecode -p < EDITTED_FILE | tar xzvf  -
+		o  This will create a directory called pwalk-master with about 16 MB of content
+		o  pwalk-master/bin/* will contain the last-built pwalk-related binaries
+
+NOTE: The various bin/* directories are NOT assured to be in-sync from the same source code!

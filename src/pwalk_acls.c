@@ -827,10 +827,14 @@ pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, 
     // *** PHASE 2 *** - Quick check for ACL or DACL presence ...
 
     // CHECK for ACL or DACL presence (without getting messy) ...
-    if ((rc = acl_extended_file_nofollow(path)) < 0)
-        PW_ACL_ERR("acl_extended_file_nofollow()");
-    if (rc == 0)
+    rc = acl_extended_file_nofollow(path);
+    if (rc == 0) {
         return (0);		// ACL4 is EMPTY (no ACL or DACL on file)
+    } else if (errno = EOPNOTSUPP) {
+        return (*err_p = EOPNOTSUPP);	// A smart caller will only suffer this once per directory!
+    } else {
+        PW_ACL_ERR("acl_extended_file_nofollow()");
+    }
 
     // *** PHASE 3 *** - FETCH ACL, DACL, and respective ACE counts ...
 

@@ -1,16 +1,27 @@
-all: pwalk wacls hacls chexcmp
+all: pwalk wacls hacls chexcmp touch3 mystat
+
+BINDIR=../bin/onefs7
+// NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
+PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c
+PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_report.c
 
 # isi_acl_util.h draws in a world of references ...
 ISILIBS=-lisi_acl -lisi_util -lstdc++ -lisi_avscan -lisi_config -lisi_date -lisi_dda -lisi_event -lisi_flexnet -lisi_hal -lisi_hw -lisi_journal -lisi_net -lisi_newfs -lisi_version -lisi_xml -lxml2 -lm -lz
 
-pwalk: pwalk.c pwalk.h pwalk_acls.h pwalk_onefs.c pwalk_onefs.h pwalk_report.c pwalk_report.h
-	$(CC)	pwalk.c pwalk_onefs.c pwalk_report.c -o ../bin/onefs7/pwalk -lm -lrt -lpthread $(ISILIBS)
+pwalk: $(PWALK_C) $(PWALK_H)
+	$(CC)	$(PWALK_C) -o $(BINDIR)/pwalk -lm -lrt -lpthread $(ISILIBS)
 
 wacls: wacls.c pwalk_acls.h
-	$(CC)	wacls.c -g -o ../bin/onefs7/wacls $(ISILIBS)
+	$(CC)	wacls.c -g -o $(BINDIR)/wacls $(ISILIBS)
 
 hacls: hacls.c pwalk_acls.h
-	$(CC)	hacls.c -o ../bin/onefs7/hacls
+	$(CC)	hacls.c -o $(BINDIR)/hacls
 
 chexcmp: chexcmp.c
-	$(CC)	chexcmp.c -o ../bin/onefs7/chexcmp
+	$(CC)	chexcmp.c -o $(BINDIR)/chexcmp
+
+touch3: touch3.c
+	$(CC)	touch3.c -o $(BINDIR)/touch3
+
+mystat: mystat.c
+	$(CC)	mystat.c -o $(BINDIR)/mystat

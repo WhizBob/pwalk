@@ -1,0 +1,11 @@
+
+[source]
+/mnt/1
+/mnt/2
+/mnt/3
+
+# [target]   
+# /junk
+# 
+#     [output]		  
+#     /junk2

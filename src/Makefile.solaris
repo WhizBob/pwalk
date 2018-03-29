@@ -1,0 +1,30 @@
+# For Solaris ...
+
+# WARNING: This file is completely unproven! Solaris build has not been done for a long while!
+#	Last Solaris build used gcc and was simply ...
+#		gcc -m64 -DSOLARIS pwalk.c -o pwalk -lm -lrt –lpthread
+# WARNING: 'hacls' and ohter ancillary programs probably need updating for Solaris!
+
+BINDIR=../bin/solaris
+PWALK_FLAGS=-lm -lrt -lpthread
+PWALK_C = pwalk.c pwalk_report.c
+PWALK_H = pwalk.h pwalk_report.h
+
+all: pwalk hacls chexcmp touch3 mystat
+
+# Every make forces a compile, because the binaries are NOT in this directory ...
+
+pwalk: $(PWALK_C) $(PWALK_H)
+	$(CC)	$(PWALK_C) -o $(BINDIR)/pwalk $(PWALK_FLAGS)
+
+hacls: hacls.c pwalk_acls.h
+	$(CC)	hacls.c -o $(BINDIR)/hacls
+
+chexcmp: chexcmp.c
+	$(CC)	chexcmp.c -o $(BINDIR)/chexcmp
+
+touch3: touch3.c
+	$(CC)	touch3.c -o $(BINDIR)/touch3
+
+mystat: mystat.c
+	$(CC)	mystat.c -o $(BINDIR)/mystat

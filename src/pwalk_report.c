@@ -162,18 +162,18 @@ parse_line(char *line, char **p_name, char **p_format)
    return(1);
 }
 
-// pwalk_report_parse() - parses input format file
+// csv_pfile_parse() - Parses -csv= input parameter file
 
 int
-pwalk_report_parse(char *ipath)
+csv_pfile_parse(char *pfile)
 {
    FILE *fp;
    char line[1024]; // generous
    char *p_name, *p_format;
    int found, i, linenum, nf;
    
-   if ((fp = fopen(ipath, "r")) == NULL)
-     { fprintf(stderr, "ERROR: Cannot open -report= file!\n"); exit(-1); }
+   if ((fp = fopen(pfile, "r")) == NULL)
+     { fprintf(stderr, "ERROR: Cannot open -csv= file!\n"); exit(-1); }
 
    nf = linenum = 0;
    while (fgets(line, sizeof(line), fp)) {
@@ -197,12 +197,12 @@ pwalk_report_parse(char *ipath)
    }
 
    if (ferror(fp))
-     { fprintf(stderr, "ERROR: Error reading -report= file!\n"); exit(-1); }
+     { fprintf(stderr, "ERROR: Error reading -csv= file!\n"); exit(-1); }
    if (nf < 1)
-     { fprintf(stderr, "ERROR: No valid fields in -report= file!\n"); exit(-1); }
+     { fprintf(stderr, "ERROR: No valid fields in -csv= file!\n"); exit(-1); }
 
    if (VERBOSE > 1) {
-      fprintf(stderr, "-report with %d fields from these sources;\n", nf);
+      fprintf(stderr, "-csv with %d fields from these sources;\n", nf);
       if (PWget_MASK & PWget_STAT) fprintf(stderr, "\tPWget_STAT\n");
       if (PWget_MASK & PWget_WORM) fprintf(stderr, "\tPWget_WORM\n");
       if (PWget_MASK & PWget_STUB) fprintf(stderr, "\tPWget_STUB\n");

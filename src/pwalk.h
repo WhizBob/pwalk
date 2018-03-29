@@ -3,11 +3,17 @@
 
 #include <sys/param.h>
 
-
 // @@@ Portabiity tidbits ...
 // See also: http://sourceforge.net/p/predef/wiki/OperatingSystems/
 
 typedef unsigned long long count_64;
+
+#if !defined(TRUE)
+#define TRUE 1
+#endif
+#if !defined(FALSE)
+#define FALSE 0
+#endif
 
 #if __APPLE__ && __MACH__
 #define __OSX__ 1
@@ -17,6 +23,9 @@ typedef unsigned long long count_64;
 
 #if defined(LINUX)
 #define __LINUX__ 1
+#define HAVE_STRUCT_STAT_ST_FLAGS 0
+#else
+#define HAVE_STRUCT_STAT_ST_FLAGS 1
 #endif
 
 #if (defined(__FreeBSD__) || defined(__OSX__)) && !defined(BSD)
@@ -29,6 +38,7 @@ typedef unsigned long long count_64;
 
 #if defined(OneFS_ABI_version) || defined(OneFS_ABI_version_v1) || defined(OneFS_ABI_version_v2)
 #define __ONEFS__ 1
+#include <ifs/ifs_types.h>
 #endif
 
 // @@@ Platform dependencies ...

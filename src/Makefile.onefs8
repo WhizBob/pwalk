@@ -1,20 +1,30 @@
-all: pwalk wacls hacls chexcmp
+all: pwalk wacls hacls chexcmp touch3 mystat
 
-# isi_acl_util.h draws in a world of references ...
+BINDIR=../bin/onefs8
+
+// NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
+PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c
+PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_report.h
 PWALK_LIBS=-lisi_persona -lisi_acl -lisi_util -lm -lrt -lpthread
 PWALK_OPTS=-pthread -fbounds_checking -g -fno-limit-debug-info
+
 WACLS_LIBS=-lisi_persona -lisi_acl -lisi_util -lm
 WACLS_OPTS=-g
 
-pwalk: pwalk.c pwalk_onefs.c pwalk_report.c pwalk.h pwalk_acls.h pwalk_onefs.h pwalk_report.h
-	$(CC)	$(PWALK_OPTS) pwalk.c pwalk_onefs.c pwalk_report.c -o ../bin/onefs8/pwalk $(PWALK_LIBS)
+pwalk: $(PWALK_C) $(PWALK_H)
+	$(CC)	$(PWALK_OPTS) $(PWALK_C) -o $(BINDIR)/pwalk $(PWALK_LIBS)
 
 wacls: wacls.c pwalk_acls.h
-	echo ${CMAKE_SYSTEM_NAME}
-	$(CC)	$(WACLS_OPTS) wacls7.c -o ../bin/onefs8/wacls $(WACLS_LIBS)
+	$(CC)	$(WACLS_OPTS) wacls.c -o $(BINDIR)/wacls $(WACLS_LIBS)
 
 hacls: hacls.c pwalk_acls.h
-	$(CC)	hacls.c -o ../bin/onefs8/hacls
+	$(CC)	hacls.c -o $(BINDIR)/hacls
 
 chexcmp: chexcmp.c
-	$(CC)	chexcmp.c -o ../bin/onefs8/chexcmp
+	$(CC)	chexcmp.c -o $(BINDIR)/chexcmp
+
+mystat: mystat.c
+	$(CC)	mystat.c -o $(BINDIR)/mystat
+
+touch3: touch3.c
+	$(CC)	touch3.c -o $(BINDIR)/touch3

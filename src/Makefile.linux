@@ -1,21 +1,18 @@
+BINDIR=../bin/linux
+
 clean:
 	rm -f pwalk xacls hacls chexcmp core.*
 
 all: pwalk xacls hacls chexcmp
 
 pwalk: pwalk.c pwalk.h pwalk_acls.c pwalk_report.c pwalk_acls.h
-	$(CC) -DLINUX -DTIMESPEC_HACK pwalk.c pwalk_acls.c pwalk_report.c -o ../bin/linux/pwalk -lacl -lm -lrt -lpthread
+	$(CC) -DLINUX -DTIMESPEC_HACK pwalk.c pwalk_acls.c pwalk_report.c -o $(BINDIR)/pwalk -lacl -lm -lrt -lpthread
 
 xacls: xacls.c pwalk_acls.c pwalk_acls.h
-	$(CC) xacls.c pwalk_acls.c -o ../bin/linux/xacls -lacl
+	$(CC) xacls.c pwalk_acls.c -o $(BINDIR)/xacls -lacl
 
 hacls: hacls.c pwalk_acls.h
-	$(CC) -dH hacls.c -o ../bin/linux/hacls
+	$(CC) -dH hacls.c -o $(BINDIR)/hacls
 
 chexcmp: chexcmp.c
-	$(CC) chexcmp.c -o ../bin/linux/chexcmp
-
-pwalk_export:
-	tar czf pwalk_export.tgz src doc bin
-	echo "@ REMOVE THIS LINE @" > pwalk_export.txt
-	uuencode pwalk_export.tgz pwalk_export.tgz >> pwalk_export.txt
+	$(CC) chexcmp.c -o $(BINDIR)/chexcmp

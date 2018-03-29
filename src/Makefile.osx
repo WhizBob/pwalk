@@ -1,23 +1,25 @@
 # For OSX ...
 
-clean:
-	rm -f ../bin/osx/pwalk ../bin/osx/hacls ../bin/osx/chexcmp
-
-all: pwalk hacls chexcmp
-
+BINDIR=../bin/osx
+PWALK_FLAGS=-lm -lpthread
 PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c
 PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h
 
-pwalk: $(PWALK_C)
-	$(CC)	$(PWALK_C) -o ../bin/osx/pwalk -lm -lpthread
+all: pwalk hacls chexcmp touch3 mystat
+
+# Every make forces a compile, because the binaries are NOT in this directory ...
+
+pwalk: $(PWALK_C) $(PWALK_H)
+	$(CC)	$(PWALK_C) -o $(BINDIR)/pwalk $(PWALK_FLAGS)
 
 hacls: hacls.c pwalk_acls.h
-	$(CC)	hacls.c -o ../bin/osx/hacls
+	$(CC)	hacls.c -o $(BINDIR)/hacls
 
 chexcmp: chexcmp.c
-	$(CC)	chexcmp.c -o ../bin/osx/chexcmp
+	$(CC)	chexcmp.c -o $(BINDIR)/chexcmp
 
-export:
-	tar czf pgbench_export.tgz pgbench*.c Makefile.onefs8 onefs8
-	echo 'Delete this line ...' > pgbench_export_uu.txt
-	uuencode pgbench_export.tgz pgbench_export.tgz >> pgbench_export_uu.txt
+touch3: touch3.c
+	$(CC)	touch3.c -o $(BINDIR)/touch3
+
+mystat: mystat.c
+	$(CC)	mystat.c -o $(BINDIR)/mystat
