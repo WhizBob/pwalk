@@ -59,10 +59,10 @@ a name than includes a timestamp of when the bundle was created.
 
 To unpack this format, the recipient should take the following steps;
 
-	- Save the E-Mail attachment to a file, e.g. 'pwalk-master_20180312@161642_uu.allow'
+	- Save the E-Mail attachment to a file, e.g. 'pwalk-export_20180312@161642_uu.allow'
 	- Edit the file to remove the first line
 	- uudecode -p < EDITTED_FILE | tar xzvf  -
-		o  This will create a directory called pwalk-master with about 16 MB of content
-		o  pwalk-master/bin/* will contain the last-built pwalk-related binaries
+		o  This will create a directory called pwalk with about 16 MB of content
+		o  pwalk/bin/* will contain the last-built pwalk-related binaries
 
 NOTE: The various bin/* directories are NOT assured to be in-sync from the same source code!

@@ -19,10 +19,11 @@ log_audit_keys(void)
    fprintf(Flog, "AUDIT:	   'C' - Compliance\n");
    fprintf(Flog, "AUDIT:	   '-' - Neither\n");
    fprintf(Flog, "AUDIT:	 2.  lock_status - SmartLock lock status;\n");
-   fprintf(Flog, "AUDIT:	  '-' - Not locked\n");
-   fprintf(Flog, "AUDIT:	   'C' - Committed (READONLY, NON-DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	   'c' - Latent Commit (READONLY, ?POSSIBLY-DELETABLE?)\n");
-   fprintf(Flog, "AUDIT:	   'X' - eXpired (READONLY, DELETABLE)\n");
+   fprintf(Flog, "AUDIT:	   '-' - Not locked\n");
+   fprintf(Flog, "AUDIT:	   'C' - Committed	(READONLY, NON-DELETABLE)\n");
+   fprintf(Flog, "AUDIT:	   'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
+   fprintf(Flog, "AUDIT:	   'X' - eXpired	(READONLY, DELETABLE)\n");
+   fprintf(Flog, "AUDIT:	   'O' - Override	(READONLY, NON-DELETABLE)\n");
    fprintf(Flog, "AUDIT:	 3.  ref_date - Reference time of worm status enquiry\n");
    fprintf(Flog, "AUDIT:	 4.  st_atime\n");
    fprintf(Flog, "AUDIT:	 5.  st_mtime\n");
@@ -243,7 +244,7 @@ pwalk_audit_file(char *ifspath, struct stat *st, unsigned crc_val, int w_id)
       eff_retention_type = '!';					// future: expiration is domain OVERRIDE value
    } else if (w_committed) {
       eff_retention_type = '>';					// future: committed with unexpired eff_retention_date
-   } else if (eff_retention_date == 0) {			// ... uncommitted from here on ...
+   } else if (eff_retention_date == 0) {				// ... uncommitted from here on ...
       eff_retention_type = '?';					// unknown: expiration is TBD; not ascertainable
    } else if (eff_auto_date && eff_retention_date) {
       eff_retention_type = '*';					// future: ephemeral, based on autocommit
@@ -259,10 +260,16 @@ pwalk_audit_file(char *ifspath, struct stat *st, unsigned crc_val, int w_id)
    lock_domain_type = w_ctime ? 'C' : 'E';
 
    // Format COMMITTED state (order of tests very important here) ...
-   if (expired) lock_status = 'X';						// eXpired
-   else if (w_committed) lock_status = 'C';					// Committed
-   else if (eff_auto_date && (eff_auto_date <= ref_date)) lock_status = 'c';	// Latent commit
-   else lock_status = '-';
+   if (w_committed) {
+      lock_status = 'C';							// Committed
+   } else {
+      lock_status = '-';							// Unlocked
+      if (eff_auto_date && (eff_auto_date <= ref_date)) lock_status = 'c';	// Latent commit
+   }
+   if (expired) {
+      lock_status = 'X';							// eXpired
+      if (eff_retention_date <= w_override_date) lock_status = 'O';		// Override
+   }
 
    // Format dates ... with an eye towards future parametrization ...
    // "%G%m%d%H%M.%S" -> YYYYMMDDhhmm.ss (for 'touch -at YYYYMMDDhhmm.ss <file>')

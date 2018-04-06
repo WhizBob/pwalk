@@ -1,10 +1,10 @@
-#!/bin/csh
+#!/bin/csh -f
 
 set tag = `date +%Y%m%d@%H%M%S`
-set uufile = ../pwalk-master_${tag}_uu.allow
+set uufile = `pwd`_export_${tag}_uu.allow
 
 # Get rid of OSX .DS_Store
-rm -f .DS_Store >& /dev/null
+rm -f .DS_Store */.DS_Store >& /dev/null
 
 # Make symlinks for scripts that are OneFS-only ...
 rm bin/*/{pwalk_python.py,astat,wstat}
@@ -17,6 +17,7 @@ foreach p (bin/onefs*)
 end
 
 # Prepare uuencoded tgz file with dummy line 1 ...
+# The pwalk/* wildcard is used explicitly to avoid picking up the .git directory!
 cd ..
 echo '# Remove this line!' > $uufile
-tar cf - pwalk-master | uuencode pwalk_master.tgz >> $uufile
+tar cf - pwalk/* | uuencode pwalk_export.tgz >> $uufile

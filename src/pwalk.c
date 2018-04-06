@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.04 beta-3"
+#define PWALK_VERSION "pwalk 2.04 beta-4"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -1053,27 +1053,43 @@ str_normalize(char *line, char **next)
 }
 
 // setup_root_path() - Open passed-in directory and capture its directory fd (dfd) and inode values.
+// Old logic was ...
 //         if (stat(line, &sb) != 0)			// Get st_mode from stat()
 //            { errstr = "Cannot stat (%s)!\n"; goto error; }
 //         if (!S_ISDIR(sb.st_mode))			// Must be a dir
 //            { errstr = "%s is not a directory!\n"; goto error; }
 //         if (access(line, R_OK|X_OK) != 0)		// Must be readsble+traversable
 //            { errstr = "%s must be an existing traversible directory!\n"; goto error; }
-// ++++ Should these be required to be absolute?
+//
+// Root paths are required to be absolute, so we call realpath() before the opendir() to assure
+// we are using an unambiguous absolute path.
 
 void
-setup_root_path(char *dirpath, int *dfd_out, ino_t *inode_out)
+setup_root_path(char **dirpath_p, int *dfd_out, ino_t *inode_out)
 {
-   DIR *dir;		// NOTE: These paths stay open forever!
+   DIR *dir;						// NOTE: These paths stay open forever!
    int dfd;
    struct stat st;
+   char *dirpath, *dirpath_real;
 
+   // Resolve passed-in directory name, and overwrite passed-in pointer if realpath() is different  ...
+   dirpath = *dirpath_p;
+   dirpath_real = realpath(dirpath, NULL);		// NOTE: never free()'d
+   assert (dirpath_real != NULL);
+   if (strcmp(dirpath, dirpath_real)) {
+      fprintf(Flog, "NOTICE: \"%s\" -> \"%s\"\n", dirpath, dirpath_real);
+      dirpath = dirpath_real;
+      *dirpath_p = dirpath;
+   }
+
+   // Must be a directory ...
    dir = opendir(dirpath);
    if (dir == NULL) {
       fprintf(Flog, "FATAL: Cannot opendir(\"%s\")!\n", dirpath);
       exit(-1);
    }
-   // Directory fd's are used for openat() and fstatat() multipath logic.
+
+   // Directory fd's (dfd's) are subsequently used for all openat() and fstatat() multipath logic.
 #if SOLARIS
    dfd = dir->dd_fd;
 #else
@@ -1082,6 +1098,7 @@ setup_root_path(char *dirpath, int *dfd_out, ino_t *inode_out)
    assert (fstat(dfd, &st) == 0);
    if (dfd_out) *dfd_out = dfd;
    if (inode_out) *inode_out = st.st_ino;
+   if (PWdebug) fprintf(Flog, "DEBUG: setup_root_path(\"%s\") inode=%lld\n", dirpath, st.st_ino);
 }
 
 // parse_paths() - Parse -paths= parameter file
@@ -2791,9 +2808,9 @@ process_arglist(int argc, char *argv[])
 
    // BIG MOMENT HERE: Open all the source and target root paths, or die trying ...
    for (i=0; i<N_SOURCE_PATHS; i++)
-      setup_root_path(SOURCE_PATHS[i], &SOURCE_DFDS[i], &SOURCE_INODE[i]);	// exits on failure!
+      setup_root_path(&SOURCE_PATHS[i], &SOURCE_DFDS[i], &SOURCE_INODE[i]);	// exits on failure!
    for (i=0; i<N_TARGET_PATHS; i++)
-      setup_root_path(TARGET_PATHS[i], &TARGET_DFDS[i], &TARGET_INODE[i]);	// exits on failure!
+      setup_root_path(&TARGET_PATHS[i], &TARGET_DFDS[i], &TARGET_INODE[i]);	// exits on failure!
 
    // Sanity check all equivalent paths must resolve to same inode number, as they will when they
    // all represent mounts of the same remote directory.  When mount points are NOT mounted, they
