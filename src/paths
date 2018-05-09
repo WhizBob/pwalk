@@ -1,8 +1,8 @@
 
 [source]
-/mnt/1
-/mnt/2
-/mnt/3
+/ifs/a
+/ifs/b
+/ifs/c
 
 # [target]   
 # /junk
