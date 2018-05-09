@@ -111,14 +111,16 @@ typedef struct {
 
 #if defined(PWALK_SOURCE)
 int PWget_MASK = PWget_STAT;		// Mask of PWget_* bits (always stat(), at least)
-int VERBOSE = 0;			// 1, 2, 3, ... more and more verbose
-int PWdebug = 0;			// -debug flag
+int VERBOSE = 0;			// -v (verbosity) 1, 2, 3, ... more and more verbose
+int PWdebug = 0;			// -d (debug) level
+int PWquiet = 0;			// -q (quiet) flag
 int PWdryrun = 0;			// -dryrun flag
 PWALK_DEBUG_BLOCK PBLK;
 #else
 extern int PWget_MASK;
 extern int VERBOSE;
 extern int PWdebug;
+extern int PWquiet;
 extern int PWdryrun;
 extern void abend(char *str);
 extern PWALK_DEBUG_BLOCK PBLK;

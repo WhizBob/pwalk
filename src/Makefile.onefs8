@@ -28,3 +28,6 @@ mystat: mystat.c
 
 touch3: touch3.c
 	$(CC)	touch3.c -o $(BINDIR)/touch3
+
+pwalk_ls_cat: pwalk_ls_cat.c
+        $(CC) pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat

@@ -16,3 +16,6 @@ hacls: hacls.c pwalk_acls.h
 
 chexcmp: chexcmp.c
 	$(CC) chexcmp.c -o $(BINDIR)/chexcmp
+
+pwalk_ls_cat: pwalk_ls_cat.c
+	$(CC) pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat
