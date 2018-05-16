@@ -42,21 +42,59 @@ static RPT_FIELD pwalk_report_fields[] = {
    { PWget_STAT, "st_mode_str", "%s", "File mode bits (as 'rwx' string)" },
    { PWget_STAT, "dir_sum_st_size", "%llu", "Directory sum of st_size" },
    { PWget_STAT, "dir_sum_st_blks", "%llu", "Directory sum of st_blks" },
+
    { PWget_OWNER, "owner_name", "%s", "Owner name" },
    { PWget_GROUP, "group_name", "%s", "Group name" },
    { PWget_ACL4, "NFS4_ACL_CHEX", "%x", "File ACL4 in hexadecimal format" },
    { PWget_ACL4, "NFS4_ACL_ONEFS_str", "%s", "File ACL4 in OneFS format (experimental)" },
    { PWget_STUB, "m_stubbed", "%d", "OneFS: File is stubbed (boolean)" },
+
 //#ifdef __ONEFS__
    { PWget_SD, "owner_SID", "%s", "OneFS: owner SID" },
    { PWget_SD, "group_SID", "%s", "OneFS: group SID" },
    { PWget_WORM, "w_ctime", "%ld", "OneFS: SmartLock WORM ctime (Compliance mode only)" },
    { PWget_WORM, "w_committed", "%d", "OneFS: SmartLock WORM committed state (boolean)" },
    { PWget_WORM, "w_expiration_time", "%ld", "OneFS: SmartLock WORM committed state (boolean)" },
+   { PWget_WORM, "w_compliance", "%d", "OneFS: SmartLock Compliance mode (boolean)" },
    { PWget_WORM, "eff_ctime", "%lu", "OneFS: Effective ctime for SmartLock" },
    { PWget_WORM, "eff_commit_str", "%c", "OneFS: SmartLock status code [-CcX]" },
    { PWget_WORM, "eff_expiration_time", "%ld", "OneFS: SmartLock expiration time" },
 //#endif
+
+// BEGIN st_flags ...
+//#define	UF_SETTABLE	0xf000ffff	/* mask of owner changeable flags */
+//#define	SF_SETTABLE	0x0fff0000	/* mask of superuser changeable flags */
+   { PWget_STAT, "UF_NODUMP", "%d", "do not dump file" },
+   { PWget_STAT, "UF_IMMUTABLE", "%d", "file may not be changed" },
+   { PWget_STAT, "UF_APPEND", "%d", "writes to file may only append" },
+   { PWget_STAT, "UF_OPAQUE", "%d", "directory is opaque wrt. union" },
+   { PWget_STAT, "UF_NOUNLINK", "%d", "file may not be removed or renamed" },
+   { PWget_STAT, "UF_INHERIT", "%d", "this flag is unused but set on" },
+   { PWget_STAT, "UF_WRITECACHE", "%d", "writes are cached." },
+   { PWget_STAT, "UF_WC_INHERIT", "%d", "unused but set on all new files." },
+   { PWget_STAT, "UF_DOS_NOINDEX", "%d", "DOS attr: don't index." },
+   { PWget_STAT, "UF_ADS	", "%d", "file is ADS directory or stream." },
+   { PWget_STAT, "UF_HASADS", "%d", "file has ADS dir." },
+   { PWget_STAT, "UF_WC_ENDURANT", "%d", "write cache is endurant." },
+   { PWget_STAT, "UF_SPARSE", "%d", "file is sparse" },
+   { PWget_STAT, "UF_REPARSE", "%d", "reparse point" },
+   { PWget_STAT, "UF_ISI_UNUSED1", "%d", "ISI UNUSED FLAG VALUE" },
+   { PWget_STAT, "UF_HIDDEN", "%d", "file is hidden" },
+   { PWget_STAT, "SF_ARCHIVED", "%d", "file is archived" },
+   { PWget_STAT, "SF_IMMUTABLE", "%d", "file may not be changed" },
+   { PWget_STAT, "SF_APPEND", "%d", "writes to file may only append" },
+   { PWget_STAT, "SF_FILE_STUBBED", "%d", "file is a stub of archived file" },
+   { PWget_STAT, "SF_NOUNLINK", "%d", "file may not be removed or renamed" },
+   { PWget_STAT, "SF_SNAPSHOT", "%d", "snapshot inode" },
+   { PWget_STAT, "SF_NOCOW", "%d", "don't snapshot inode" },
+   { PWget_STAT, "SF_CACHED_STUB", "%d", "stub has cached data" },
+   { PWget_STAT, "SF_HASNTFSACL", "%d", "file has an NTFS ACL block" },
+   { PWget_STAT, "SF_HASNTFSOG", "%d", "file has an NTFS owner/group block" },
+   { PWget_STAT, "UF_DOS_ARCHIVE", "%d", "DOS Attribute: ARCHIVE bit" },
+   { PWget_STAT, "UF_DOS_HIDDEN", "%d", "DOS Attribute: HIDDEN bit" },
+   { PWget_STAT, "UF_DOS_RO", "%d", "DOS Attribute: READONLY bit" },
+   { PWget_STAT, "UF_DOS_SYSTEM", "%d", "DOS Attribute: SYSTEM bit" },
+// END st_flags ...
    { 0, NULL, NULL, NULL }
 };
 

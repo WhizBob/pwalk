@@ -142,6 +142,23 @@ onefs_get_sids(const int fd, char *owner_sid, char *group_sid)
    }
 }
 
+// get_worm_state(ifs_lin_t lin,
+// 	ifs_snapid_t snapid,		// 0 for HEAD
+// 	struct worm_state *worm_out,
+// 	bool *compliance,
+// 	struct isi_error **error_out)
+
+// * Get domain info for a LIN. In order to determine if a LIN is governed by
+// * a particular domain type, pass in an ae_out param and check
+// * ae_out->entry->d_flags. If the WORM state does not exist for a LIN,
+// * *worm_out will be initialized to {} if worm_out is passed in.
+// int
+// bam_domain_getinfo(struct ifs_op *io,
+// 	struct bam_agg_domain_entry *ae_out,
+// 	struct domain_set *doms_out,
+// 	struct domain_set *ancestors_out,
+// 	struct worm_state *worm_out)
+
 int
 onefs_get_w_stat(const ino_t lin, worm_info_t *wi)	// klooge: PLACEHOLDER
 {

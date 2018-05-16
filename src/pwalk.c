@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.04b5"
+#define PWALK_VERSION "pwalk 2.04b6"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -312,12 +312,14 @@ void *worker_thread(void *parg);
 static int N_WORKERS = 1;			// <N> from "-dop=<N>"
 static int MAX_OPEN_FILES = 0;			// Calculated to compare with getrlimit(NOFILES)
 static int GZ_OUTPUT = 0;			// gzip output streams when '-gz' used
+static int ABSPATH_MODE = 0;			// True when absolute paths used
 static int SKIP_DOT_SNAPSHOT = 1;		// Skip .snapshot[s] dirs unless '+.snapshot' specified
 static int TSTAT = 0;				// Show timed statistics when +tstat used
 static int P_MODE = 1;				// Show mode bits unless -pmode suppresses
 static int P_ACL_PLUS = 1;			// Show ACL as '+' unless -acls suppresses
 static int P_CRC32 = 0;				// Show CRC32 for -ls, -xml
 static int P_MD5 = 0;				// Show MD5 for -ls, -xml
+static int P_SELECT = 0;			// True when -select specified to enable [select] criteria
 static int ST_BLOCK_SIZE = 1024;		// Units for statbuf->st_blocks (not currently settable)
 static char *PYTHON_COMMAND = NULL;		// For OneFS -audit operation
 
@@ -334,7 +336,6 @@ static int Cmd_XML = 0;
 // Secondary modes ...
 static int Cmd_DENIST = 0;			// +denist
 static int Cmd_RM_ACLS = 0;			// +rm_acls (OneFS only)
-static int Cmd_SELECT = 0;			// -select
 static int Cmd_TALLY = 0;			// +tally
 static int Cmd_WACLS = 0;			// +wacls=
 static int Cmd_XACLS = 0;			// +xacls= (Linux only) bitmask combo of ...
@@ -392,8 +393,10 @@ static struct {                                 // klooge: hard-coded +tally opt
 // @@@ Globals foundational to the treewalk logic per se ...
 static FILE *Fpop = NULL, *Fpush = NULL;	// File-based FIFO pointers
 static FILE *Flog = NULL;			// Main logfile output (pwalk.log)
-static long long T_START, T_FINISH;		// Program elapsed time (hi-res)
-struct timeval START_TIMEVAL;			// Program start time
+static long long T_START_ns, T_FINISH_ns;	// For Program elapsed time (hi-res)
+static struct timeval T_START_tv;		// Program start time as timeval ...
+static time_t T_START_s;			// ... and again in seconds.
+
 #define MAXPATHS 64				// Arbitrary limit for '-paths='
 #define PROGRESS_TIME_INTERVAL 3600		// Seconds between progress outputs to log file
 
@@ -522,8 +525,8 @@ usage(void)
    printf("	-dryrun			// suppress making changes (with -fix_times & -rm)\n");
    printf("	-pmode			// suppress showing formatted mode bits (with -ls and -xml)\n");
    printf("	-acls			// suppress ACL info in some outputs, eg: '+'\n");
-   printf("	-v			// verbose; verbosity increased by each '-v'\n");
-   printf("	-d			// debug; verbosity increased by each '-d'\n");
+   printf("	-v			// verbose; verbosity increased by each 'v'\n");
+   printf("	-d			// debug; verbosity increased by each 'd'\n");
    printf("	+tstat			// include hi-res timing statistics in some outputs\n");
    printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("   <directory> ...		// one or more directories to traverse\n");
@@ -1046,7 +1049,7 @@ init_worker_pool(void)
 
 // @@@ SECTION: Multi-path support @@@
 
-// str_normalize() - Remove triaiing whitespace in-situ in passed string, and return pointer
+// str_normalize() - Remove traiiing whitespace in-situ in passed string, and return pointer
 // to first non-whitespace character or NUL byte if resulting string is empty.
 
 char *
@@ -1061,6 +1064,21 @@ str_normalize(char *line, char **next)
    result = p;
    for (p=line+len; p>result; ) if (isgraph(*p)) break; else *p-- = '\0';	// trim end
    return result;
+}
+
+// str_ends_with() - helper function.
+
+int
+str_ends_with(char *str, char ch)
+{
+   int len;
+   char *plast;
+
+   if (str == NULL) return(0);
+   if (str[0] == '\0') return(0);
+   plast = str + strlen(str) - 1;
+   if (*plast == ch) return(1);
+   return(0);
 }
 
 // setup_root_path() - Open passed-in directory and capture its directory fd (dfd) and inode values.
@@ -1083,12 +1101,12 @@ setup_root_path(char **dirpath_p, int *dfd_out, ino_t *inode_out)
    struct stat st;
    char *dirpath, *dirpath_real;
 
-   // Resolve passed-in directory name, and overwrite passed-in pointer if realpath() is different  ...
+   // Resolve passed-in directory name, and overwrite passed-in value if its realpath() is different  ...
    dirpath = *dirpath_p;
-   dirpath_real = realpath(dirpath, NULL);		// NOTE: never free()'d
+   dirpath_real = realpath(dirpath, NULL);		// NOTE: called only once, and never free()'d
    assert (dirpath_real != NULL);
    if (strcmp(dirpath, dirpath_real)) {
-      fprintf(Flog, "NOTICE: \"%s\" -> \"%s\"\n", dirpath, dirpath_real);
+      // fprintf(Flog, "NOTICE: \"%s\" -> \"%s\"\n", dirpath, dirpath_real);
       dirpath = dirpath_real;
       *dirpath_p = dirpath;
    }
@@ -1098,11 +1116,12 @@ setup_root_path(char **dirpath_p, int *dfd_out, ino_t *inode_out)
    if (dir == NULL) {
       fprintf(Flog, "FATAL: Cannot opendir(\"%s\") as a relative root!\n", dirpath);
       exit(-1);
-   } else if (VERBOSE) {
-      fprintf(Flog, "VERBOSE: Successful opendir(\"%s\") as a relative root.\n", dirpath);
    }
 
-   // Directory fd's (dfd's) are subsequently used for all openat() and fstatat() multipath logic.
+   // Directory fd's (dfd's) are subsequently used as the relative root paths for all openat()
+   // and fstatat() multipath logic.
+   // NOTE: For opendir(2) operations, since there is no opendirat() variant, those must all be
+   // performed using ABSOLUTE pathnames.
 #if SOLARIS
    dfd = dir->dd_fd;
 #else
@@ -1122,9 +1141,9 @@ parse_paths(char *parfile)
    int fd, fsize, i, len, rc;
    char *p, *buf, *line, *next, *errstr = "";
    struct stat sb;
-   int got_target = 0, got_source = 0, got_output = 0;
+   int got_target = 0, got_source = 0, got_output = 0, got_select;
    int dfd;	// directory file descriptor
-   enum { NONE, TARGET, SOURCE, OUTPUT } section = NONE;
+   enum { NONE, TARGET, SOURCE, SELECT, OUTPUT } section = NONE;
 
    // Open -paths= file and read entirely into memory ...
    assert ((fd = open(parfile, O_RDONLY)) >= 0);
@@ -1152,6 +1171,9 @@ parse_paths(char *parfile)
          } else if (strcasecmp(line, "[output]") == 0) {
             if (got_output) { errstr = "Only one %s allowed!\n"; goto error; }
             got_output = 1; section = OUTPUT;
+         } else if (strcasecmp(line, "[select]") == 0) {
+            if (got_select) { errstr = "Only one %s allowed!\n"; goto error; }
+            got_select = 1; section = SELECT;
          } else {
             { errstr = "Invalid syntax: %s\n";  goto error; }
          }
@@ -1173,6 +1195,10 @@ parse_paths(char *parfile)
             }
          case OUTPUT: {
             OUTPUT_ARG = line;
+            break;
+            }
+         case SELECT: {						// -select enables *using* these criteria
+            if (VERBOSE) fprintf(stderr, "NOTE: -select criteria present!\n");
             }
          }
       }
@@ -1203,7 +1229,7 @@ skip_this_directory(char *dirpath)
    if (p == NULL) p = dirpath;
    else p += 1;
 
-   // Directories we MIGHT skip all begin with a '.' ...
+   // Directories we MIGHT skip ALL begin with a '.' ...
    if (p[0] != '.') return FALSE;
 
    // Skip .isi-compliance in -audit mode, and .snapshot[s] unless +snapshot was specified ...
@@ -1784,7 +1810,7 @@ pwalk_tally_file(struct stat *sb, int w_id)
    // We only tally regular files here ...
    if (!S_ISREG(sb->st_mode)) return;
    
-   days_since_accessed = (START_TIMEVAL.tv_sec - sb->st_atime)/SECS_PER_DAY;
+   days_since_accessed = (T_START_tv.tv_sec - sb->st_atime)/SECS_PER_DAY;
    
    for (i=tallyed=0; TALLY_INFO[i].days && !tallyed; i++) {
       atime_match = (i == 0) || (days_since_accessed < TALLY_INFO[i].days) || (TALLY_INFO[i].days == -2);
@@ -1844,11 +1870,21 @@ pwalk_tally_output()
 int
 selected(char *filename, struct stat *sb)
 {
-   // Blacklist excludes ...
-   if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
-   // Whitelist includes ...
-   if (!S_ISREG(sb->st_mode)) return (1);		// Include all non-ordinary files
-   if (strstr(filename, "|")) return (1);			// Include names with '|'
+   time_t t_threshold = 7 * 86400;	// One week, in seconds
+
+   // Blacklist / exclude ...
+   // if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
+
+   // Whitelist / includes ..
+   // if (!S_ISREG(sb->st_mode)) return (1);		// Include all non-ordinary files
+   // if (strstr(filename, "|")) return (1);		// Include names with '|'
+   // if (sb->st_uid == 0) return (1);			// Include only root-owned files
+
+   // Include only files changed in the last 7 days ...
+   // NOTE: st_birthtime will NOT be accurate on NFS client! It will probably be a copy of ctime!
+   if ((sb->st_ctimespec.tv_sec > (T_START_s - t_threshold)) ||
+       (sb->st_mtimespec.tv_sec > (T_START_s - t_threshold))) return (1);
+
    // Default is to exclude ...
    return (0);
 }
@@ -2120,7 +2156,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    int pathlen, namelen;
    unsigned long long rm_path_hits;	// Count files rm'd within a directory
    char rm_status[16];			// For "%s rm ..." -> '#' == dryrun, <n> == errno
-   char *p;
+   char *p, *pend;
    struct dirent *pdirent, *result;
    struct stat sb;
    char owner_sid[128], group_sid[128];
@@ -2135,8 +2171,8 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    long long ns_stat, ns_getacl;	// ns for stat() and get ACL calls
    char ns_stat_s[32], ns_getacl_s[32];	// Formatted timing values
    char mode_str[16];			// Formatted mode bits
+   char *FileName;			// Pointer to dirent (filename)
    char *RelDirPath;			// Pointer to WDAT.DirPath
-   char *FileName;			// Pointer to dirent's filename
    char AbsDirPath[MAX_PATHLEN+1];	// Absolute directory path
    char RelPathName[MAX_PATHLEN+1];	// Dirname or filename relative to source or target root
    off_t bytes_allocated;		// Per-file allocated space
@@ -2177,14 +2213,20 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       if (VERBOSE > 2) { fprintf(WLOG, "@opendir\n"); fflush(WLOG); }
    }
 
-   // @@@ GATHER (dir enter) Calculate AbsDirPath for just-entered dir ...
+   // @@@ GATHER (dir enter) Calculate AbsDirPath for directory we are entering ...
    p = RelDirPath;
-   if (*p == '.' && *(p+1) == '\0') p = "";
-   if (*p == '.' && *(p+1) == PATHSEPCHR) p += 2;
-   if (strlen(p))	// Prefix the relative root ...
-      catpath3(AbsDirPath, SOURCE_PATH(w_id), p, NULL);
+   if (p[0] == '.') {
+      if (p[1] == '\0') p = "";			// dir == "."
+      else if (p[1] == PATHSEPCHR) p += 2;	// ignore "./" initial string
+   }
+
+   // Previously-stored path strings may be superceded here ...
+   if (ABSPATH_MODE)
+      strcpy(AbsDirPath, p);						// No multi-pathing ...
+   else if ((p[0] == PATHSEPCHR) || str_ends_with(SOURCE_PATH(w_id), PATHSEPCHR))
+      sprintf(AbsDirPath, "%s%s", SOURCE_PATH(w_id), p);		// Just concatenate ...
    else
-      strcpy(AbsDirPath, SOURCE_PATH(w_id));
+      sprintf(AbsDirPath, "%s%c%s", SOURCE_PATH(w_id), PATHSEPCHR, p);	// Concatenate with PATHSEPCHR ...
 
    // Here's the opendir() ...
    dir = opendir(AbsDirPath);		// No opendirat() exists!
@@ -2278,9 +2320,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    if (VERBOSE > 2) fprintf(stderr, "> %s %s <\n", mode_str, RelDirPath);
 
    // @@@ ACTION/OUTPUT (dir enter): Perform requested actions on <directory> itself ...
-   if (Cmd_SELECT && !selected(RelDirPath, &sb)) {	// No output!
-      ;
-   } else if (Cmd_XML) {
+   if (Cmd_XML) {
       fprintf(WLOG, "<directory>\n");
       // Format <path> output line ...
       fprintf(WLOG, "<path> %lld%s%s %u %lld %s%s </path>\n",
@@ -2391,6 +2431,9 @@ scandirloop:
          else dirent_type = DT_UNKNOWN;
       }
 
+      // @@@ ACTION: Skip files that are not selected ...
+      if (P_SELECT && !selected(RelPathName, &sb)) continue;
+
       // @@@ ACTION (-rm): Operates of selected() non-directories only ...
       // NOTE: The .sh files created by -rm would NOT be safely executable, because a failed 'cd'
       // command would make the follpwing 'rm' commands invalid -- so we output the return code
@@ -2401,7 +2444,6 @@ scandirloop:
          if (PWdryrun) {
             rm_status[0] = '#';				// Dryrun indicator
          } else {		// rm the file!
-            // int unlinkat(int fd, const char *path, int flag);
             // Only flag option is AT_REMOVEDIR, which we do not need here ...
             rc = unlinkat(SOURCE_DFD(w_id), RelPathName, 0);
             sprintf(rm_status, "%d", rc);
@@ -2551,7 +2593,7 @@ outputs:
 #endif
 
       // @@@ OUTPUT (primary modes): Mutually-exclusive operating modes ...
-      if (Cmd_SELECT && !selected(FileName, &sb)) {	// No output!
+      if (P_SELECT && !selected(FileName, &sb)) {	// No output!
          ;
       } else if (Cmd_LS) {		// -ls
          fprintf(WLOG, "%s %u %lld %s%s%s\n",
@@ -2567,8 +2609,8 @@ outputs:
             cmp_source_target(w_id, RelPathName, &sb, cmp_file_result_str);
          else // File CANNOT exist!
             strcpy(cmp_file_result_str, "E");
-         if (strcmp(cmp_file_result_str, "-")) {		// Only report differences
-            if (!cmp_dir_reported) {				// If we deferred reporting directory, do it now
+         if (strcmp(cmp_file_result_str, "-")) {	// Only report differences
+            if (!cmp_dir_reported) {			// If we deferred reporting directory, do it now
                if (ftell(WDAT.wlog)) fprintf(WLOG, "\n");	// blank line before each new directory
                fprintf(WLOG, "@ %s %s\n", cmp_dir_result_str, RelDirPath);
                cmp_dir_reported = TRUE;
@@ -2584,7 +2626,7 @@ outputs:
       } else if (Cmd_FIXTIMES) {	// -fixtimes
          pwalk_fix_times(FileName, RelPathName, &sb, w_id);
       } else if (Cmd_CSV) {		// -csv= (DEVELOPMENTAL: Temporary placeholder code)
-         if (Cmd_SELECT) {
+         if (P_SELECT) {
             fprintf(WLOG, "\"%s\"\n", RelPathName);
          } else {			// klooge: SHOULD BE call to reporting module
             fprintf(WLOG, "%u,%s,%s,%u,%s,%s,\"%s\"\n",
@@ -2704,6 +2746,23 @@ check_maxfiles(void)
    }
 }
 
+// arg_count_ch() - helper function for -vvv, -dddd, etc - returns VERBOSE or DEBUG level based
+// on repeated characters.  Returns -1 on any error.  Expectation is that passed-in string arg
+// will be all the same letter, iterated.
+
+int
+arg_count_ch(char *arg, char ch)
+{
+   char *p;
+   int count = 0;
+
+   assert (arg[0] == '-');
+   for (p = arg+1; *p; p++)
+      if (*p == ch) count += 1;
+      else return (-1);
+   return (count);
+}
+
 // process_arglist() - Process command-line options w/ rudimentary error-checking ...
 
 void
@@ -2713,8 +2772,8 @@ process_arglist(int argc, char *argv[])
    char msg[256];
    char *mx_options, *p;
    int i, narg, nmodes, badarg = FALSE;
-   enum { none, relative, absolute } dt_arg, dt_mode = none;
-   int ndirargs = 0;
+   enum { none, relative, absolute } path_mode, dirarg_mode = none;
+   int dirarg_count = 0;
 
    // @@@ Command-line argument processing ...
    if (argc < 2) usage();
@@ -2760,19 +2819,6 @@ process_arglist(int argc, char *argv[])
       } else if (strncmp(arg, "-csv=", 5) == 0) {	// DEVELOPMENTAL ====
          csv_pfile_parse(arg+5);
          Cmd_CSV = 1;
-      } else if (strcmp(arg, "-v") == 0) {		// Verbosity ...
-         VERBOSE += 1;
-         if (VERBOSE > 2) fprintf(stderr, "VERBOSE=%d\n", VERBOSE);
-      } else if (strcmp(arg, "-d") == 0) {		// Debug ...
-         PWdebug += 1;
-      } else if (strcmp(arg, "-q") == 0) {		// Quiet ...
-         PWquiet += 1;
-      } else if (strcmp(arg, "-acls") == 0) {		// Suppress showing ACL presence (ie: with '+')
-         P_ACL_PLUS = 0;
-      } else if (strcmp(arg, "+crc") == 0) {		// Tag-along modes ...
-         P_CRC32 = 1;
-      } else if (strcmp(arg, "-select") == 0) {
-         Cmd_SELECT = 1;
       } else if (strcmp(arg, "+denist") == 0) {
          Cmd_DENIST = 1;
 #if defined(__ONEFS__)	// OneFS only features
@@ -2796,48 +2842,66 @@ process_arglist(int argc, char *argv[])
       } else if (strcmp(arg, "+xacls=onefs") == 0) {	// eXtract NFS4 ACLS ... onefs ...
          Cmd_XACLS |= Cmd_XACLS_ONEFS;
 #endif // PWALK_ACLS
+      } else if (strcmp(arg, "-acls") == 0) {		// Suppress showing ACL presence (ie: with '+')
+         P_ACL_PLUS = 0;
+      } else if (strcmp(arg, "+crc") == 0) {		// Tag-along modes ...
+         P_CRC32 = 1;
+      } else if (strcmp(arg, "-select") == 0) {
+         P_SELECT = 1;
       } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
          SKIP_DOT_SNAPSHOT = 0;
       } else if (strcmp(arg, "+tstat") == 0) {		// also add timed stats
          TSTAT = 1;
-      } else if (strcmp(arg, "-dryrun") == 0) {		// Modifiers ...
-         PWdryrun = 1;
       } else if (strcmp(arg, "-gz") == 0) {
          GZ_OUTPUT = 1;
       } else if (strcmp(arg, "-pmode") == 0) {
          P_MODE = 0;
+      } else if (strcmp(arg, "-dryrun") == 0) {		// Modifiers ...
+         PWdryrun = 1;
+      } else if (strncmp(arg, "-v", 2) == 0) {		// Verbosity (tentative) ...
+         VERBOSE += arg_count_ch(arg, 'v');
+         if (VERBOSE < 0) { fprintf(stderr, "ERROR: \"%s\" - unknown option!\n", arg); exit(-1); }
+         if (VERBOSE > 1) fprintf(stderr, "VERBOSE=%d\n", VERBOSE);
+      } else if (strncmp(arg, "-d", 2) == 0) {		// Debug (tentative) ...
+         PWdebug += arg_count_ch(arg, 'd');
+         if (PWdebug < 0) { fprintf(stderr, "ERROR: \"%s\" - unknown option!\n", arg); exit(-1); }
+         if (PWdebug > 0) fprintf(stderr, "PWdebug=%d\n", PWdebug);
+      } else if (strcmp(arg, "-q") == 0) {		// Quiet ...
+         PWquiet += 1;
       } else if (*arg == '-' || *arg == '+') {		// Unknown +/- option ...
          usage();
-      } else { // Everything else assumed to be a <directory> arg ...
+      } else { // Everything else is assumed to be a <directory> arg ...
          // NOTE: our FIFO is only created AFTER all args are validated, so we can't push these yet!
-         ndirargs++;
+         dirarg_count++;
          // Enforce that all <directory> args *must* either be absolute or relative ...
-         dt_arg = (*arg == PATHSEPCHR) ? absolute : relative;
-         if (dt_mode == none) {
-            dt_mode = dt_arg; 
-         } else if (dt_arg != dt_mode) {
-            fprintf(Flog, "ERROR: <directory> args must all be either absolute or relative!\n");
+         path_mode = (*arg == PATHSEPCHR) ? absolute : relative;
+         if (dirarg_mode == none) {
+            dirarg_mode = path_mode; 
+         } else if (path_mode != dirarg_mode) {
+            fprintf(Flog, "ERROR: <directory> args must consistently be either absolute or relative!\n");
             exit(-1);
          }
       }
    }
 
    // @@@ Resolve all multipath-related restrictions and related sanity checks ...
+   ABSPATH_MODE = (dirarg_mode == absolute);		// GLOBALize the dirarg mode ...
+   // fprintf(stderr, "* ABSPATH_MODE=%s\n", ABSPATH_MODE ? "True" : "False");
 
-   // When <directory> args are absolute, neither -source nor -path= [source] paths can be specified!
-   if (dt_mode == absolute) {
-      if (N_SOURCE_PATHS > 0 || SOURCE_ARG) {
-         fprintf(Flog, "ERROR: Cannot specify -source= or -ipaths= with absolute paths!\n");
+   // When <directory> args are absolute, source and target paths cannot be specified!
+   if (ABSPATH_MODE) {
+      if (N_SOURCE_PATHS > 0 || N_TARGET_PATHS > 0 || SOURCE_ARG || TARGET_ARG) {
+         fprintf(Flog, "ERROR: Cannot use -source= or -target= with absolute <directory> arguments!\n");
          exit(-1);
       } else {
          SOURCE_ARG = PATHSEPSTR;	// root ('/') is the implicit -source= parameter in absolute mode
       }
    }
 
-   // Apply -source= parameter if -paths= does not conflict ...
+   // Apply -source= parameter if -paths= [source] does not conflict ...
    if (SOURCE_ARG) {
       if (N_SOURCE_PATHS > 0) {
-         fprintf(Flog, "ERROR: Cannot specify both -source= and -ipaths= [source] paths!\n");
+         fprintf(Flog, "ERROR: Cannot specify both -source= and -paths= [source] paths!\n");
          exit(-1);
       } else {
          SOURCE_PATHS[0] = SOURCE_ARG;	// Either implied "/" or -source= arg
@@ -2845,7 +2909,7 @@ process_arglist(int argc, char *argv[])
       }
    }
 
-   // Iff no -source= or -paths= [source] paths specified, default to CWD (".").
+   // Iff no -source= or -paths= [source] paths specified, default to CWD (".") ...
    if (N_SOURCE_PATHS < 1) {	
       SOURCE_PATHS[0] = ".";
       N_SOURCE_PATHS = 1;
@@ -2854,7 +2918,7 @@ process_arglist(int argc, char *argv[])
    // Apply -target= parameter if -paths= does not conflict ...
    if (TARGET_ARG) {
       if (N_TARGET_PATHS > 0) {
-         fprintf(Flog, "ERROR: Cannot specify both -target= and -ipaths= [target] paths!\n");
+         fprintf(Flog, "ERROR: Cannot specify both -target= and -paths= [target] paths!\n");
          exit(-1);
       } else {
          TARGET_PATHS[0] = TARGET_ARG;
@@ -2868,12 +2932,12 @@ process_arglist(int argc, char *argv[])
    }
 
    if (N_TARGET_PATHS > 0 && !(Cmd_CMP || Cmd_FIXTIMES)) {
-      fprintf(Flog, "ERROR: '-target=' or [target] paths only allowed with -cmp & -fix_times!\n");
+      fprintf(Flog, "ERROR: '-target=' or -paths= [target] paths only allowed with -cmp & -fix_times!\n");
       exit(-1);
    }
 
    // Check if we'll be able to open all the files we need ...
-   // NOTE: This check must follow -paths= parsing, but before multipaths are opened.
+   // NOTE: This check MUST follow -paths= parsing, but before multipaths are opened.
    check_maxfiles();
 
    // BIG MOMENT HERE: Open all the source and target root paths, or die trying ...
@@ -2895,7 +2959,7 @@ process_arglist(int argc, char *argv[])
          if (TARGET_INODE[i] != TARGET_INODE[0])
             { fprintf(Flog, "ERROR: Not all target paths represent same inode! Check mounts?\n"); exit(-1); }
 
-   if ((N_TARGET_PATHS > 0) && TARGET_INODE[0] == SOURCE_INODE[0])
+   if ((N_TARGET_PATHS > 0) && (TARGET_INODE[0] == SOURCE_INODE[0]))
          { fprintf(Flog, "ERROR: source and target paths cannot point to the same directory!\n"); exit(-1); }
 
    // @@@ Other argument sanity checks ...
@@ -2905,27 +2969,12 @@ process_arglist(int argc, char *argv[])
       badarg = TRUE;
    }
 
-   // Mutual exclusion of primary modes ...
-   nmodes = Cmd_LS + Cmd_LS_SPECIAL + Cmd_XML + Cmd_RM + Cmd_FIXTIMES + Cmd_CMP + Cmd_AUDIT + Cmd_CSV;
-   if (nmodes > 1) {
-      mx_options = "[ ls | ls-special | xml | rm | fix_mtime | cmp | audit | csv ]";	// Mutually Exclusive options
-      fprintf(Flog, "ERROR: Only one of %s allowed!\n", mx_options);
-      badarg = TRUE;
-   }
-
-   // Add up secondary modes ...
-   nmodes += Cmd_DENIST + Cmd_TALLY + Cmd_XACLS + Cmd_WACLS + Cmd_RM_ACLS;
-   if (nmodes < 1) {
-      fprintf(Flog, "ERROR: Nothing to do! (No primary or secondary modes specified!\n");
-      badarg = TRUE;
-   }
-
    if (Cmd_WACLS && (strlen(WACLS_CMD) < 5)) {	// crude and arbitrary
       fprintf(Flog, "ERROR: '+wacls=' requires '<command>' value!\n");
       badarg = TRUE;
    }
 
-   if (ndirargs < 1) {							// Most basic check is last
+   if (dirarg_count < 1) {							// Most basic check is last
       fprintf(Flog, "ERROR: No <directory> arguments passed!\n");
       badarg = TRUE;
    }
@@ -2966,8 +3015,9 @@ main(int argc, char *argv[])
 #endif
 
    // Capture our start times ...
-   T_START = gethrtime();
-   gettimeofday(&START_TIMEVAL, NULL);
+   T_START_ns = gethrtime();			// hi-res
+   gettimeofday(&T_START_tv, NULL);		// timeval (tv_sec, tv_ns)
+   T_START_s = T_START_tv.tv_sec;		// time_t (s)
 
    // Take note of our default directory ...
 #if defined(SOLARIS) || defined(__LINUX__)
@@ -3034,7 +3084,7 @@ main(int argc, char *argv[])
    // ------------------------------------------------------------------------
 
    // Stop the clock ...
-   T_FINISH = gethrtime();
+   T_FINISH_ns = gethrtime();
 
    // Force flush Flog. HENCEFORTH, FURTHER Flog WRITES CAN JUST fprintf(Flog ...) ...
    LogMsg(NULL);
@@ -3176,7 +3226,7 @@ main(int argc, char *argv[])
            ((cpu_usage.tms_stime + cpu_usage.tms_cstime) / (double) CLK_TCK) );
 
    // @@@ OUTPUT (log): Elapsed time as HH:MM:SS.ms ...
-   t_elapsed_sec = (T_FINISH - T_START) / 1000000000.; // convert nanoseconds to seconds
+   t_elapsed_sec = (T_FINISH_ns - T_START_ns) / 1000000000.; // convert nanoseconds to seconds
    t_h = trunc(t_elapsed_sec / 3600.);
    t_m = trunc(t_elapsed_sec - t_h*3600) / 60;
    t_s = fmod(t_elapsed_sec, 60.);
