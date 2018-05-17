@@ -5,7 +5,7 @@ PWALK_FLAGS=-lm -lpthread
 PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c
 PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h
 
-all: pwalk hacls chexcmp touch3 mystat
+all: pwalk hacls chexcmp touch3 mystat pwalk_ls_cat
 
 # Every make forces a compile, because the binaries are NOT in this directory ...
 

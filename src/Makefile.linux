@@ -3,7 +3,7 @@ BINDIR=../bin/linux
 clean:
 	rm -f pwalk xacls hacls chexcmp core.*
 
-all: pwalk xacls hacls chexcmp
+all: pwalk xacls hacls chexcmp pwalk_ls_cat
 
 pwalk: pwalk.c pwalk.h pwalk_acls.c pwalk_report.c pwalk_acls.h
 	$(CC) -DLINUX -DTIMESPEC_HACK pwalk.c pwalk_acls.c pwalk_report.c -o $(BINDIR)/pwalk -lacl -lm -lrt -lpthread

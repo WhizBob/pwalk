@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.04b6"
+#define PWALK_VERSION "pwalk 2.04b7"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -2780,7 +2780,8 @@ process_arglist(int argc, char *argv[])
    for (narg=1; narg < argc; narg++) {
       arg = argv[narg];
       if (sscanf(arg, "-dop=%d", &N_WORKERS) == 1) {
-         continue;
+         if (N_WORKERS > MAX_WORKERS)
+            { fprintf(stderr, "ERROR: Exceeded MAX_WORKERS=%d with -dop= argument!\n", MAX_WORKERS); exit(-1); }
       } else if (strncmp(arg, "-paths=", strlen("-paths=")) == 0) {
          parse_paths(arg+strlen("-paths="));
       } else if (strncmp(arg, "-source=", strlen("-source=")) == 0) {

@@ -1,4 +1,4 @@
-all: pwalk wacls hacls chexcmp touch3 mystat
+all: pwalk wacls hacls chexcmp touch3 mystat pwalk_ls_cat
 
 BINDIR=../bin/onefs8
 

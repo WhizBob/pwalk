@@ -1,4 +1,4 @@
-all: pwalk wacls hacls chexcmp touch3 mystat
+all: pwalk wacls hacls chexcmp touch3 mystat pwalk_ls_cat
 
 BINDIR=../bin/onefs7
 // NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
@@ -25,3 +25,6 @@ touch3: touch3.c
 
 mystat: mystat.c
 	$(CC)	mystat.c -o $(BINDIR)/mystat
+
+pwalk_ls_cat: pwalk_ls_cat.c
+	$(CC)	pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat

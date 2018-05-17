@@ -1,8 +1,12 @@
 
 [source]
-/ifs/a
-/ifs/b
-/ifs/c
+/mnt/1
+/mnt/2
+/mnt/3
+
+[select]
+(atime < 37156456) & (name like "abd*")
+| mtime < "Mar 19, 2017 20:00"
 
 # [target]   
 # /junk
