@@ -48,7 +48,7 @@ void pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, stat_t *sb_p, FILE *
 void pw_acl4_fprintf_chex(acl4_t *acl4p, const char *path, stat_t *sb_p, FILE *stream);
 void pw_acl4_canonicalize(acl4_t *acl4);
 int pw_acl4_fwrite_binary(acl4_t *acl4, const char *path, FILE **pwOutFILE, char bmode, char *emsg_p, int *err_p);
-int pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, acl4_t *acl4p, char *emsg_p, int *err_p);
+int pw_acl4_get_from_posix_acls(const char *abspath, const int dir_flag, int *aclstat, acl4_t *acl4p, char *emsg_p, int *err_p);
 
 // *** NORMALIZE to RFC 7530 ACE4_* symbols (vice Linux NFS4_ACE symbols) ***
 #if !defined(ACE4_READ_DATA)

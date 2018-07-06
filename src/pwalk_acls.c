@@ -421,8 +421,7 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
     }
 #endif // (0) DEVELOPMENTAL
 
-
-    // STEP #4: Match remaining individual perms ...
+    // STEP #4: Match remaining 14 individual permissions ...
     if (S_ISDIR(sb_p->st_mode)) {
         if (maskval & ACE4_LIST_DIRECTORY   ) p += sprintf(p, "list,");
         if (maskval & ACE4_ADD_FILE         ) p += sprintf(p, "add_file,");
@@ -612,7 +611,7 @@ zeropad(char *str, int nbytes)
 // RETURNS: Number of ACL4 ACEs added, or -1 on any error.
 //
 // CAUTION: This function MUST be called first for a DACL then for the ACL! Trivial ACLs are NOT ignored
-// when a DACL is present, because they must be interated in the resulting NFS4 ACL.
+// when a DACL is present, because they must be integrated into the resulting NFS4 ACL.
 
 static int
 pw_acl_xlat_add_posix_acl_to_acl4(const acl_t *posix_acl_p, const int dacl_flag, const int dir_flag, acl4_t *acl4p, char *emsg_p, int *err_p)
@@ -808,7 +807,7 @@ out:
 // 'errno' is thread-specific, and hence MT-safe.
 
 int
-pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, acl4_t *acl4p, char *emsg_p, int *err_p)
+pw_acl4_get_from_posix_acls(const char *abspath, const int dir_flag, int *aclstat, acl4_t *acl4p, char *emsg_p, int *err_p)
 {
     int i, rc, retval;
     mode_t posix_acl_equiv_mode;		// from acl_equiv_mode() triviality test (for possible chmod() use later)
@@ -824,29 +823,38 @@ pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, 
     errno = 0;
     *aclstat = 0;		// Assume no ACL or DACL
 
-    // *** PHASE 2 *** - Quick check for ACL or DACL presence ...
+    // *** PHASE 2 *** - FETCH ACL, DACL, and respective ACE counts ...
 
+#ifdef NEW_GET_BY_FD
+    if ((posix_acl = acl_get_fd(fd)) == NULL) {			// Fetch ACL ...
+        if (errno == EOPNOTSUPP) return (*err_p = EOPNOTSUPP);	// A smart caller will only suffer this once per directory!
+    } else {
+        PW_ACL_ERR("acl_get_fd()");
+    }
+#else
     // CHECK for ACL or DACL presence (without getting messy) ...
-    rc = acl_extended_file_nofollow(path);
+    rc = acl_extended_file_nofollow(abspath);
     if (rc == 0) {
         return (0);		// ACL4 is EMPTY (no ACL or DACL on file)
-    } else if (errno = EOPNOTSUPP) {
-        return (*err_p = EOPNOTSUPP);	// A smart caller will only suffer this once per directory!
-    } else {
-        PW_ACL_ERR("acl_extended_file_nofollow()");
+    } else if (rc < 0) {
+        if (errno == EOPNOTSUPP) {
+            return (*err_p = EOPNOTSUPP);	// A smart caller will only suffer this once per directory!
+        } else {
+            PW_ACL_ERR("acl_extended_file_nofollow()");
+        }
     }
-
-    // *** PHASE 3 *** - FETCH ACL, DACL, and respective ACE counts ...
+#endif
 
     // NOTE:  Linux always returns a non-NULL posix_acl, and a non-NULL posix_dacl on a directory,
     // but appears to be inconsistent with whether or not it will return a NULL posix_dacl on a
     // non-directory.
-    if ((posix_acl = acl_get_file(path, ACL_TYPE_ACCESS)) == NULL)
+    if ((posix_acl = acl_get_file(abspath, ACL_TYPE_ACCESS)) == NULL) {
         PW_ACL_ERR("acl_get_file([ACL_TYPE_ACCESS])");
+    }
     if ((posix_acl_aces = acl_entries(posix_acl)) < 0)
         PW_ACL_ERR("acl_entries(<acl>)");
     if (dir_flag) {
-        if ((posix_dacl = acl_get_file(path, ACL_TYPE_DEFAULT)) == NULL)
+        if ((posix_dacl = acl_get_file(abspath, ACL_TYPE_DEFAULT)) == NULL)
             PW_ACL_ERR("acl_get_file([ACL_TYPE_DEFAULT])");
         if ((posix_dacl_aces = acl_entries(posix_dacl)) < 0)
             PW_ACL_ERR("acl_entries(<dacl>)");
@@ -864,7 +872,7 @@ pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, 
     }
     if (posix_dacl_aces) *aclstat |= 4;
 
-    // *** PHASE 4 *** - Output for 'xacls -sp' (Show POSIX) option ...
+    // *** PHASE 3 *** - Output for 'xacls -sp' (Show POSIX) option ...
 
     if (pw_acls_SHOW_POSIX) {
         if (posix_acl_aces) {		// Display ACL input ...
@@ -886,7 +894,7 @@ pw_acl4_get_from_posix_acls(const char *path, const int dir_flag, int *aclstat, 
         }
     }
 
-    // *** PHASE 5 *** - POSIX-to-NFS4 translation
+    // *** PHASE 4 *** - POSIX-to-NFS4 translation
 
     // Add translated ACL and DACL to empty ACL4 (on error, subordinate function has set error vbls, so we just goto 'out') ...
     if (pw_acl_xlat_add_posix_acl_to_acl4(&posix_dacl, 1, dir_flag, acl4p, emsg_p, err_p) < 0)	// Add DACL first (!) ...

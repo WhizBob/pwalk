@@ -8,7 +8,7 @@
 // BY: Bob.Sneed@isilon.com, July 2016
 
 // To build 'xacls' on Linux:
-// 	gcc pwalk_acls.c -DXACLS -dH -lacl -o xacls
+// 	gcc xacls.c pwalk_acls.c -dH -lacl -o xacls
 //	NOTE: -dH enables core dumps, may require 'ulimit -c unlimited'
 //	NOTE: debug with 'gdb xacls core.<pid>' ... 'bt'
 
@@ -63,7 +63,7 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
     char *path, pathbuf[2048];	// Generous buffer for stdin path names
     int pathlen;		// Size of path in pathbuf
     struct stat sb;
-    int pw_stdin = 0;		// Unless '-i' is given
+    int pw_stdin = 0;		// Unless '-i' or '--' is specified
     int show_posix = 0;		// Unless '-sp' used
     int show_nfs4_setfacl = 0;	// Unless '-sn' used
     int show_chex = 0;		// Unless '-sh' used
@@ -111,7 +111,8 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
             show_chex = 1;
             continue;
         } else if (strcmp(argv[arg], "--") == 0) {
-            break;
+            pw_stdin = 1;
+            continue;
         } else if (argv[arg][0] == '-') {
             PW_ACL_ERR("Invalid command option!");
         } else {
@@ -164,6 +165,12 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
         // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
         pw_acl4_get_from_posix_acls(path, dir_flag, &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
         if (pw_acls_errno) printf("ERROR: %s [%d - \"%s\"]\n", pw_acls_emsg, pw_acls_errno, strerror(pw_acls_errno));
+
+//fprintf(stderr, "@ %s\n", path);
+//fprintf(stderr, "@ %d\n", dir_flag);
+//fprintf(stderr, "@ %s
+//fprintf(stderr, "@ %s
+//fprintf(stderr, "@ %d
 
         // Show post-translation results for -sp ...
         if (show_posix) {

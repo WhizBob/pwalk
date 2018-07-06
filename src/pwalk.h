@@ -36,11 +36,6 @@ typedef unsigned long long count_64;
 #define BSDLINUX 1
 #endif
 
-#if defined(OneFS_ABI_version) || defined(OneFS_ABI_version_v1) || defined(OneFS_ABI_version_v2)
-#define __ONEFS__ 1
-#include <ifs/ifs_types.h>
-#endif
-
 // @@@ Platform dependencies ...
 
 #if defined(SOLARIS)
@@ -80,6 +75,9 @@ static int CLK_TCK;
 #define USE_VTIMES 1
 #include <sys/extattr.h>
 #include <sys/isi_enc.h>	// for real lvtimes()/vtimes() (OneFS private)
+#include <ifs/ifs_types.h>
+#include <ifs/ifs_syscalls.h>
+#include <ifs/bam_pctl.h>
 #else				// use 'stub' versions of these to reduce inline conditional code
 #define O_OPENLINK 0		// klooge: also for native BSD?
 #define PWALK_AUDIT 0

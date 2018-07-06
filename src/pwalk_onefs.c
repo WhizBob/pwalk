@@ -24,8 +24,8 @@
 #if defined(__ONEFS__)
 
 // <<< OneFS-specific >>> ...
-#include <rest_client.h>			// enabler for PAPI REST functions
-#include <sys/isi_persona.h>			// security descriptor access
+#include <ifs/ifs_types.h>
+#include <sys/isi_persona.h>			// security descriptor (SD) access
 #include <isi_acl/isi_sd.h>
 #include <isi_acl/isi_acl_util.h>		// isi_acl_util.h aclu* helper functions
 
@@ -80,6 +80,115 @@ pwalk_debug_sdp(struct ifs_security_descriptor *p, char *msg)
 //    memcpy(PBLK.copy, p, PBLK.size);
    pwalk_debug_check();
 }
+
+// @@@ OneFS-dependent functions ... diskpools ...
+
+#ifdef REAL_SOON_NOW
+
+struct pctl2_get_expattr_args {
+        unsigned int                    ge_cookie;
+
+        /* Policy stuff */
+        struct protection_level         ge_max_child_protection;
+        struct protection_policy        ge_file_protection_policy;
+        ifs_disk_pool_policy_id_t       ge_disk_pool_policy_id;
+        ifs_disk_pool_id_t              ge_data_disk_pool_id;
+        ifs_disk_pool_id_t              ge_metadata_disk_pool_id; 
+	...
+
+OK, no need for C++
+/usr/lib/libisi_diskpool.so  is the library
+disk_pool_db_read() is the routine
+	returns a disk_pool_db struct pointer
+	which is { cookie, highest id, version, then a set of record pointers
+the records are struct disk_pool_record
+(these are in isi_diskpool.h)
+
+and the record contains a struct ifs_disk_pool_db_entry_configuration
+that's defined in kernel in ifs_types.h
+and
+3444  /**
+3445   * This serves as the general template for accessing the fields occurring in
+3446   * all three disk pool DB entry types.
+3447   */
+3448  struct ifs_disk_pool_db_entry_configuration {
+3449    struct protection_policy default_policy;
+3450  
+3451    char name[MAXNAMELEN + 1];
+3452  
+3453    bool system : 1;                /* disk pool */ 
+... so finally, that's where the name lives
+
+// pctl2_get_expattr() gets the following file metadata ...
+//
+// struct pctl2_get_expattr_args {
+//    unsigned int                      ge_cookie;
+//   
+//    /* Policy stuff */
+//    struct protection_level           ge_max_child_protection;
+//    struct protection_policy          ge_file_protection_policy;
+//    ifs_disk_pool_policy_id_t         ge_disk_pool_policy_id;
+//    ifs_disk_pool_id_t                ge_data_disk_pool_id;
+//    ifs_disk_pool_id_t                ge_metadata_disk_pool_id;
+//   
+//    /* Current protection */
+//    struct protection_level           ge_current_protection;
+//   
+//    /* Restripe-oriented members */
+//    enum restripe_state               ge_state;
+//    enum restripe_type                ge_purpose;
+//    uint64_t        	                ge_total_work;
+//    uint64_t        	                ge_work_remaining;
+//   
+//    /* Flags */
+//    fflags_t        	                ge_inode_flags;
+//    bool                              ge_inherit_protection : 1;
+//    bool                              ge_coalescing_on : 1;
+//    bool                              ge_coalescing_ec : 1;
+//    bool                              ge_inherit_coalescing : 1;
+//    bool                              ge_packing_policy : 1;
+//   
+//    /* Is this an SBT? */
+//    bool                              ge_is_sbt : 1;
+//   
+//    /* Degraded status */
+//    bool                              ge_needs_repair : 1;
+//    bool                              ge_needs_reprotect : 1;
+//   
+//    /* Degraded status on the LIN tree entry */
+//    bool                              ge_lin_entry_needs_repair : 1;
+//   
+//    /* Manually managed flags */
+//    bool                              ge_manually_manage_access : 1;
+//    bool                              ge_manually_manage_packing : 1;
+//    bool                              ge_manually_manage_protection : 1;
+//    bool                              ge_has_nfattrs : 1;
+//   
+//    /* Inode addrs */
+//    int                               ge_num_iaddrs;
+//    struct ifs_baddr        	        ge_iaddrs[MAX_MIRRORS];
+//    uint32_t                          ge_create_time;
+//    uint32_t                          ge_create_timensec;
+//    uint32_t                          ge_rename_time;
+//   
+//    /* Layout information */
+//    int                               ge_at_r_drives;
+//    ifs_access_pattern_t              ge_access_pattern;
+//    enum ifs_ssd_strategy             ge_ssd_strategy;
+//    enum ifs_ssd_layout_status	ge_ssd_status;
+//   
+//    /* New File Attributes */
+//    struct ifs_new_file_attributes	ge_nfattrs;
+//    uint32_t        	                ge_cloudpools_flags;
+//    uint64_t        	                ge_cloudpools_size;
+//    uint32_t        	                ge_cloudpools_mtime;
+//    uint32_t        	                ge_cloudpools_mtimensec;
+//    uint32_t        	                ge_cloudpools_pad; /* XXXegc: compiler padding */
+//    uint64_t                          ge_create_verifier;
+// };
+
+#endif
+
 
 // @@@ OneFS-dependent functions ...
 
@@ -142,11 +251,29 @@ onefs_get_sids(const int fd, char *owner_sid, char *group_sid)
    }
 }
 
+// @@@ Get WORM state ...
+
 // get_worm_state(ifs_lin_t lin,
 // 	ifs_snapid_t snapid,		// 0 for HEAD
 // 	struct worm_state *worm_out,
 // 	bool *compliance,
 // 	struct isi_error **error_out)
+
+//  int
+//  ifm_get_worm(const struct ifs_op *io, struct worm_state *worm)
+//  {
+//  	int error = 0;
+//  
+//  	error = _ifm_get_worm(io, worm);
+//  	ASSERT(error != ENEEDLOCK);
+//  	return error;
+//  }
+//  
+//  int
+//  ifm_get_worm_unlocked(const struct ifs_op *io, struct worm_state *worm)
+//  {
+//  	return _ifm_get_worm(io, worm);
+//  }
 
 // * Get domain info for a LIN. In order to determine if a LIN is governed by
 // * a particular domain type, pass in an ae_out param and check
@@ -162,6 +289,13 @@ onefs_get_sids(const int fd, char *owner_sid, char *group_sid)
 int
 onefs_get_w_stat(const ino_t lin, worm_info_t *wi)	// klooge: PLACEHOLDER
 {
+   struct worm_state worm;
+
+// get_worm_state(ifs_lin_t lin,
+//      ifs_snapid_t snapid,            // 0 for HEAD
+//      struct worm_state *worm_out,
+//      bool *compliance,
+//      struct isi_error **error_out)
    // int w_committed;		// Three values from WORM state for LIN ...
    // time_t w_ctime;
    // time_t w_retention_date;

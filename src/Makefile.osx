@@ -25,4 +25,4 @@ mystat: mystat.c
 	$(CC)	mystat.c -o $(BINDIR)/mystat
 
 pwalk_ls_cat: pwalk_ls_cat.c
-	$(CC) pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat
+	$(CC)	pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat
