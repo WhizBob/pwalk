@@ -1,13 +1,19 @@
 # pwalk
 
-*** Limited Distribution ***
+*** NOTICE: 2.05b3 was incorrectly committed as 2.05b8 (8 versus 3).  The next push will  ***
+*** will end with b4, and the b8 anomally will live in infamy. This build purports to     ***
+*** correct major brokeness in the ACL-related code and related utilities.                ***
 
 This repository contains a high-speed multi-threaded treewalk utility called 'PowerWalk' (pwalk)
-and an assortment of associated utility programs. These programs are all by Bob Sneed of Dell EMC
-(Bob.Sneed@Dell.com) as part of a collection of utilities sometimes collectively referred to as
-"Bobware". While some of the utilities in the Bobware collection date back to the early 1980's,
-pwalk has only been under development since 2012. It has accumulated a unique set of features for
-solving various problems in a scale-out NAS environment.
+for various ends including metadata extraction and formatting, tactical filesystem repair work,
+and utility operations such as bulk file deletion.  Also included is an assortment of ancillary
+programs and documentation.
+
+These programs are all by Bob Sneed of Dell EMC (Bob.Sneed@Dell.com) as part of a collection of
+utilities sometimes collectively referred to as "Bobware". While some of the utilities in the
+Bobware collection date back to the early 1980's, pwalk has only been under development since 2012.
+It has accumulated a unique set of features for solving various problems in a scale-out NAS
+environments.
 
 pwalk is an ongoing work-in-progress, with the ambition of becoming an increasingly general-purpose
 tool for various operations on highly-scaled filesystems, including but not limited to;
@@ -18,10 +24,9 @@ tool for various operations on highly-scaled filesystems, including but not limi
 	- file heirarchy comparisons with -cmp
 	- being a framework for custom-coded tasks requiring a high-speed treewalker foundation
 
-pwalk code management was moved to Github as a private project on September 29, 2017.  It is not
-intended that anyone come into possession of this code without first collaborating with the author,
-Bob Sneed. It is requested of all persons to whom access to this project is granted that they
-refrain from any secondary distribution of these materials.
+pwalk code management was moved to Github as a private project on September 29, 2017, and subsequently
+made public in.  It is not intended that anyone come into possession of this code without first
+collaborating with the author, Bob Sneed.
 
 *** DISCLAIMERS ***
 
