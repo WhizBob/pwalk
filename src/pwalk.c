@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.05b3"
+#define PWALK_VERSION "pwalk 2.05b4"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -60,6 +60,8 @@
 //	... Add parameterization for -csv (report column keys)
 //	... Add parameterization for -select (file selection criteria)
 //	... Add externalized parameterization for pwalk +tally (age buckets)
+// Version 2.05b4 2018/07/16 - Bug fixes
+//	- Remove +xacls extraneous debug output in .log file
 // Version 2.05b3 2018/06/28 - Bug fixes
 //	- Fix +xacls brokeness from new multipath implementation, ancient typo, and ancient dangling logic error
 // Version 2.05b2 2018/06/?? - New modes and major OneFS improvements
@@ -2293,7 +2295,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 
    // @@@ Here's the opendir() ...
    dir = opendir(AbsPathDir);	// No opendirat() exists  :-(  !
-fprintf(Flog, "@ opendir(\"%s\") errno=%d\n", AbsPathDir, dir == NULL ? errno : 0);
+   if (PWdebug >2) fprintf(Flog, "@ opendir(\"%s\") errno=%d\n", AbsPathDir, dir == NULL ? errno : 0);
    if (dir == NULL) {							// @@ <warning> ...
       // Directory open errors (ENOEXIST, !ISDIR, etc) just provoke WARNING output.
       // klooge: want to skip ENOEXIST, EPERM, EBUSY, but otherwise process non-directory FIFO entry
@@ -2355,7 +2357,7 @@ fprintf(Flog, "@ opendir(\"%s\") errno=%d\n", AbsPathDir, dir == NULL ? errno : 
    if (P_ACL_P || Cmd_XACLS || Cmd_WACLS) {
       // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
       pw_acl4_get_from_posix_acls(AbsPathDir, 1, &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
-fprintf(Flog, "$ AbsPathDir=\"%s\" aclstat=%d pw_acls_errno=%d\n", AbsPathDir, aclstat, pw_acls_errno);
+      if (PWdebug > 2) fprintf(Flog, "$ AbsPathDir=\"%s\" aclstat=%d pw_acls_errno=%d\n", AbsPathDir, aclstat, pw_acls_errno);
       if (TSTAT) { t2 = gethrtime(); ns_getacl = t2 - t1; sprintf(ns_getacl_s," (%lldus) ", ns_getacl/1000); }
       if (pw_acls_errno == EOPNOTSUPP) {	// If no support on directory, no point asking for files!
          acl_supported = FALSE;
@@ -2555,7 +2557,7 @@ scandirloop:
          assert(have_stat);		// klooge: primitive insurance
          // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
          pw_acl4_get_from_posix_acls(AbsPathName, S_ISDIR(sb.st_mode), &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
-fprintf(Flog, "$ AbsPathName=\"%s\" aclstat=%d pw_acls_errno=%d\n", AbsPathName, aclstat, pw_acls_errno);
+         if (PWdebug > 2) fprintf(Flog, "$ AbsPathName=\"%s\" aclstat=%d pw_acls_errno=%d\n", AbsPathName, aclstat, pw_acls_errno);
          if (TSTAT) { t2 = gethrtime(); ns_getacl = t2 - t1; sprintf(ns_getacl_s," (%lldus) ", ns_getacl/1000); }
          if (pw_acls_errno) {		// Log both to main log and worker's log ...
             DS.NWarnings += 1;
@@ -3377,6 +3379,11 @@ main(int argc, char *argv[])
          ((GS.NBytesAllocated - GS.NBytesNominal)*100.)/GS.NBytesNominal);
    }
 
+   // @@@ ... Show  ACL-related stats ...
+   if (Cmd_XACLS || Cmd_WACLS || Cmd_RM_ACLS || P_ACL_P) {
+      fprintf(Flog, "NOTICE: %16llu - ACL%s found\n", GS.NACLs, (GS.NACLs != 1) ? "s" : "");
+   }
+
    // @@@ ... Show +crc, md5, and +denist stats ...
    if (Cmd_DENIST || P_CRC32 || P_MD5 || Cmd_RM_ACLS) {
       fprintf(Flog, "NOTICE: Summary (READONLY) file data stats ...\n");
@@ -3387,11 +3394,6 @@ main(int argc, char *argv[])
          fprintf(Flog, "NOTICE: %16llu - CRC byte%s read\n", GS.READONLY_CRC_Bytes, (GS.READONLY_CRC_Bytes != 1) ? "s" : "");
       if (Cmd_DENIST)
          fprintf(Flog, "NOTICE: %16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
-   }
-
-   // @@@ ... Show  ACL-related stats ...
-   if (Cmd_XACLS || Cmd_WACLS || Cmd_RM_ACLS) {
-      fprintf(Flog, "NOTICE: %16llu - ACL%s processed\n", GS.NACLs, (GS.NACLs != 1) ? "s" : "");
    }
 
    // @@@ ... Command line recap ...
