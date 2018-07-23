@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.05b4"
+#define PWALK_VERSION "pwalk 2.05b5"
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -2858,7 +2858,7 @@ arg_count_ch(char *arg, char ch)
    assert (arg[0] == '-');
    for (p = arg+1; *p; p++)
       if (*p == ch) count += 1;
-      else { fprintf(stderr, "-%c err\n", ch); return (-1); }
+      else return (-1);
    return (count);
 }
 
