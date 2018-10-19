@@ -51,8 +51,10 @@ ctime_extended(struct timespec *ts, char *ubuf)
    return rbuf;
 }
 
-// NOTE: OSX stat() returns timespec values (tv_sec, tv_nsec), while utimes() uses an array
-// of two timeval values (tv_sec, tv_usec).
+// NOTE: OSX stat() returns nanosecond-resolution timespec values (tv_sec, tv_nsec), while
+// utimes() on all *nix systems returns an array of two microsecond-resolution timeval values
+// (tv_sec, tv_usec). Modern Linux also offers utimensat() to SET ns-granular timestamps,
+// but evidently does not yet have a stat() alternative to observe them ... LOL.
 
 int
 main(int argc, char *argv[])

@@ -1,5 +1,7 @@
 // pwalk_report.c - pwalk generic output reporting module.
 
+/// @@@ DEVELOPMENTAL!  NOT FUNCTIONAL YET! @@@
+
 #define PWALK_REPORT_SOURCE 1
 
 #include <stdio.h>

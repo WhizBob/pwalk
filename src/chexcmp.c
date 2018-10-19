@@ -14,11 +14,15 @@
 void
 usage(void)
 {
-   printf("Usage: chexcmp <CHEX val 1> [<CHEX val 2>]\n");
-   printf("  Where: A CHEX value is a hexadecimal 'mask' or 'mask.flags' value\n");
-   printf("         When one argument is passed, it is simply decomposed.\n");
-   printf("         When two arguments are passed, they are bitwise compared.\n");
-   printf("         All mask and flag values use RFC 7530 ACE4_* definitions.\n");
+   printf("Usage: chexcmp <CHEX_value> [<CHEX value>]\n");
+   printf("  Where: A <CHEX_value> is a hexadecimal '<permissions_mask>[.flags]' value\n");
+   printf("         All permissions_mask and flag values are per RFC 7530 ACE4_* definitions.\n");
+   printf("         When one <CHEX_value> arg is passed, it is simply decomposed.\n");
+   printf("         When two <CHEX_value> args are passed, they are bitwise compared.\n");
+   printf("         NOTE: '-1' can be used as a permissions_mask or flags value, thus ...\n");
+   printf("              '-1' as a <CHEX_value> means 'all permissions'\n");
+   printf("              '-1.-1' as a <CHEX_value> means 'all permissions and all flags'\n");
+   printf("              'chexcmp <CHEX_value> -1.-1' will show what a <CHEX_value> does NOT grant\n");
    exit(-1);
 }
 

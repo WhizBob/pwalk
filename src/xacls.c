@@ -23,6 +23,7 @@
 #include <linux/nfs4.h>
 #include <acl/libacl.h>
 #else
+#include <sys/mount.h>
 #include <nfs/nfs.h>
 #include <sys/acl.h>
 #endif

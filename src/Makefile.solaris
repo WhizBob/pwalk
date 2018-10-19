@@ -6,9 +6,10 @@
 # WARNING: 'hacls' and ohter ancillary programs probably need updating for Solaris!
 
 BINDIR=../bin/solaris
+// NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
+PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c pwalk_sums.c
+PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
 PWALK_FLAGS=-lm -lrt -lpthread
-PWALK_C = pwalk.c pwalk_report.c
-PWALK_H = pwalk.h pwalk_report.h
 
 all: pwalk hacls chexcmp touch3 mystat pwalk_ls_cat
 

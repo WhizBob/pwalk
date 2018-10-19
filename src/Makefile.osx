@@ -1,9 +1,15 @@
 # For OSX ...
 
+# /usr/libexec/makewhatis - to update whatis database
+# /private/etc/man.conf - 
+# /private/etc/manpaths - 
+# /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/share/man - XCode man
+# /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include - include root
+
 BINDIR=../bin/osx
+PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c pwalk_sums.c
+PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h pwalk_sums.h
 PWALK_FLAGS=-lm -lpthread
-PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c
-PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h
 
 all: pwalk hacls chexcmp touch3 mystat pwalk_ls_cat
 

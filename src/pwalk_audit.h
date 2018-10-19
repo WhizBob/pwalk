@@ -13,38 +13,38 @@
 void
 log_audit_keys(void)
 {
-   fprintf(Flog, "AUDIT: Column indexes for .audit output files ...\n");
-   fprintf(Flog, "AUDIT:	 1.  lock_domain_type - SmartLock domain type;\n");
-   fprintf(Flog, "AUDIT:	   'E' - Enterprise\n");
-   fprintf(Flog, "AUDIT:	   'C' - Compliance\n");
-   fprintf(Flog, "AUDIT:	   '-' - Neither\n");
-   fprintf(Flog, "AUDIT:	 2.  lock_status - SmartLock lock status;\n");
-   fprintf(Flog, "AUDIT:	   '-' - Not locked\n");
-   fprintf(Flog, "AUDIT:	   'C' - Committed	(READONLY, NON-DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	   'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	   'X' - eXpired	(READONLY, DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	   'O' - Override	(READONLY, NON-DELETABLE)\n");
-   fprintf(Flog, "AUDIT:	 3.  w_ref_time - Reference time of worm status enquiry\n");
-   fprintf(Flog, "AUDIT:	 4.  st_atime\n");
-   fprintf(Flog, "AUDIT:	 5.  st_mtime\n");
-   fprintf(Flog, "AUDIT:	 6.  st_ctime\n");
-   fprintf(Flog, "AUDIT:	 7.  st_birthtime\n");
-   fprintf(Flog, "AUDIT:	 8.  w_ctime\n");
-   fprintf(Flog, "AUDIT:	 9.  w_retention_date\n");
-   fprintf(Flog, "AUDIT:	10.  eff_auto_date - Ephemeral AutoCommit date\n");
-   fprintf(Flog, "AUDIT:	11.  eff_retention_type - Basis of effective expiration date;\n");
-   fprintf(Flog, "AUDIT:	   '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
-   fprintf(Flog, "AUDIT:	   '!' - future (override)\n");
-   fprintf(Flog, "AUDIT:	   '<' - past (committed,past)\n");
-   fprintf(Flog, "AUDIT:	   '>' - future (committed,future)\n");
-   fprintf(Flog, "AUDIT:	   '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
-   fprintf(Flog, "AUDIT:	   '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
-   fprintf(Flog, "AUDIT:	   'E' - error unexpected case w/ persisted expiration!\n");
-   fprintf(Flog, "AUDIT:	12.  eff_retention_date - Effective expiration date\n");
-   fprintf(Flog, "AUDIT:	13.  st_uid\n");
-   fprintf(Flog, "AUDIT:	14.  st_size\n");
-   fprintf(Flog, "AUDIT:	15.  st_blocks\n");
-   fprintf(Flog, "AUDIT:	16.  \"<ifspath>\"\n");
+   fprintf(Plog, "AUDIT: Column indexes for .audit output files ...\n");
+   fprintf(Plog, "AUDIT:	 1.  lock_domain_type - SmartLock domain type;\n");
+   fprintf(Plog, "AUDIT:	   'E' - Enterprise\n");
+   fprintf(Plog, "AUDIT:	   'C' - Compliance\n");
+   fprintf(Plog, "AUDIT:	   '-' - Neither\n");
+   fprintf(Plog, "AUDIT:	 2.  lock_status - SmartLock lock status;\n");
+   fprintf(Plog, "AUDIT:	   '-' - Not locked\n");
+   fprintf(Plog, "AUDIT:	   'C' - Committed	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'X' - eXpired	(READONLY, DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'O' - Override	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	 3.  w_ref_time - Reference time of worm status enquiry\n");
+   fprintf(Plog, "AUDIT:	 4.  st_atime\n");
+   fprintf(Plog, "AUDIT:	 5.  st_mtime\n");
+   fprintf(Plog, "AUDIT:	 6.  st_ctime\n");
+   fprintf(Plog, "AUDIT:	 7.  st_birthtime\n");
+   fprintf(Plog, "AUDIT:	 8.  w_ctime\n");
+   fprintf(Plog, "AUDIT:	 9.  w_retention_date\n");
+   fprintf(Plog, "AUDIT:	10.  eff_auto_date - Ephemeral AutoCommit date\n");
+   fprintf(Plog, "AUDIT:	11.  eff_retention_type - Basis of effective expiration date;\n");
+   fprintf(Plog, "AUDIT:	   '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
+   fprintf(Plog, "AUDIT:	   '!' - future (override)\n");
+   fprintf(Plog, "AUDIT:	   '<' - past (committed,past)\n");
+   fprintf(Plog, "AUDIT:	   '>' - future (committed,future)\n");
+   fprintf(Plog, "AUDIT:	   '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
+   fprintf(Plog, "AUDIT:	   '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
+   fprintf(Plog, "AUDIT:	   'E' - error unexpected case w/ persisted expiration!\n");
+   fprintf(Plog, "AUDIT:	12.  eff_retention_date - Effective expiration date\n");
+   fprintf(Plog, "AUDIT:	13.  st_uid\n");
+   fprintf(Plog, "AUDIT:	14.  st_size\n");
+   fprintf(Plog, "AUDIT:	15.  st_blocks\n");
+   fprintf(Plog, "AUDIT:	16.  \"<ifspath>\"\n");
 }
 
 // Shell scripting hints for analyzing .audit files ...

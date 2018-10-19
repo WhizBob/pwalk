@@ -2,8 +2,8 @@ all: pwalk wacls hacls chexcmp touch3 mystat pwalk_ls_cat
 
 BINDIR=../bin/onefs7
 // NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
-PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c
-PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_report.c
+PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c pwalk_sums.c
+PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
 
 # isi_acl_util.h draws in a world of references ...
 ISILIBS=-lisi_acl -lisi_util -lstdc++ -lisi_avscan -lisi_config -lisi_date -lisi_dda -lisi_event -lisi_flexnet -lisi_hal -lisi_hw -lisi_journal -lisi_net -lisi_newfs -lisi_version -lisi_xml -lxml2 -lm -lz

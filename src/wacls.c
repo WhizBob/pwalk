@@ -642,11 +642,11 @@ main(int argc, char *argv[])
         if (acl4size == 0) break; // (ok termination)
         if (acl4size > sizeof(acl4_t))				WACL_ERR("acl4 overflow!");
         if (pathsize > sizeof(path))				WACL_ERR("path overflow!");
-        if (fread(&acl4, 1, acl4size, stdin) != acl4size)	WACL_ERR("fread(<acl4>)");
-        if (fread(path, 1, pathsize, stdin) != pathsize)	WACL_ERR("fread(<path>)");
+        if (fread(&acl4, 1, acl4size, stdin) != acl4size)		WACL_ERR("fread(<acl4>)");
+        if (fread(path, 1, pathsize, stdin) != pathsize)		WACL_ERR("fread(<path>)");
 
         // Apply the acl4 (ignore errors; they were already logged) ...
-	// NOTE: -merge happens in apply_acl4(), which also logs errors. We only log on success
+	    // NOTE: -merge happens in apply_acl4(), which also logs errors. We only log on success
         // unless VERBOSE is used.
         if (apply_acl4(&acl4, path)) {
             N_Apply_Failures++;
@@ -654,10 +654,20 @@ main(int argc, char *argv[])
             N_Apply_Successes++;
             if (VERBOSE) {
                 sprintf(WACL_MSG, "@ \"%s\"\n", path);
-                wacl_log(NULL);
+                wacl_log(NULL);	// force flush
             }
         }
     }
+
+    //SOON: } else if (v2) {
+    //SOON:     // O(size) - Owner
+    //SOON:     // G(size) - Group
+    //SOON:     // M() - Mode bits
+    //SOON:     // T
+    //SOON: } else {
+    //SOON:     abend
+    //SOON: }
+
     retval = 0;		// Normal exit
 
 out:
