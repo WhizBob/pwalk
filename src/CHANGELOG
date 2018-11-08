@@ -1,25 +1,33 @@
-// RFE: Parameterize inode output
-// RFE: Add selection criteria ($variable expression like 'find' predicates)
-// RFE: Do more about multiple-processing of hard-linked inodes
-//
 // Version.FUTURE [ DEVELOPMENTAL TO-DO ]
-//	... Add pclt2 metadata items on OneFS
+//	SOMEHOW: Do something to avoid multiple-processing of hard-linked inodes
+//	$$$$ Add find(1)-like selection predicates and actions
+//	$$ Add pclt2 metadata items on OneFS
 //		... Add ifs.file_pool metadata (OneFS only)
 //		... Remove pwalk_python.py dependency for -audit
-//	... Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
-//	... Add external parameterization for -csv[=<list>] and [csv] pfile section (report column keys)
+//	Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
+//	Add external parameterization for -csv[=<list>] and [csv] pfile section (report column keys)
 //		Inspired by: ps '-o' option (inode,asize,mode,nlink,nsize,name)
-//	... Add external parameterization for -select in [tally] pfile section (file selection criteria)
+//	Add external parameterization for -select in [tally] pfile section (file selection criteria)
+//	Add external parameterization for +tally in [tally] section of parameter file
+//	Add MD5 checksum features to -cmp mode
+//	Add external parameters for -csv mode (the next most-likely project)
+//	Make concurrency runtime-dynamic to allow variable impact
+//	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
 // ...
-// Version 2.06 - 2018/09/?? - New Features
-//	- Added +md5 option (IN-PROGRESS; calculate using same f() as +crc!)
+// Version 2.06 - 2018/09/?? - New Features in-process
+//	- Added read and write of NTFS ACLs (NFS4, OSX-native, OneFS-native, and possibly Windows-native)
+//	- Added -xdev option (like in find(1); do not span filesystems) (based on stat(2) st_dev)
+//	- Added +md5 and +sha1 options (IN-PROGRESS; calculate using same f() as +crc!)
+//		... optionally convey in wacls data stream
+//		... store md5 and/or sha1 checksums as an attribute during -cp operations
+//		... validate calculated versus stored md5 checksums
+//		... store md5 as attribute on target with -cp +md5
 //	- Added -cp primary mode to mass copy files to [target] (data, owner, group, sd)
 //		... where the sd (security descriptor) can be processed in-band
-//	- Store md5 with -cp +md5
-//	- Updated wacls: convey owner, group, mode, and timestamps for chown, chgrp, chmod, and utimes calls
-//	- Updated OneFS wacls (version and extend wacls stream format)
-//	- Developed Unity-native wacls
-//	- Added external parameterization for +tally in [tally] section of parameter file
+//	- Updated wacls: convey/capture additional metadata
+//		... add chown, chgrp, chmod, utimes, md5, sha1, (OneFS futimes & WORM state)
+//		... v2 stream format, preserving compatabllity with v1.0 format
+//		... Unity-native wacls build
 // ...
 // Version 2.06b1 - 2018/10/17 - New Features & changed behaviors
 //	- Updated slide deck
