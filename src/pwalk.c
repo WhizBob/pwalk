@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.06b1"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.06b2"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -175,22 +175,24 @@
 #endif
 
 #define WORKER_OBUF_SIZE 32*1024	// Output buffer, per-worker
+#define NUL '\0';
 #define PATHSEPCHR '/'			// Might make conditional for Windoze
 #define PATHSEPSTR "/"			// Might make conditional for Windoze
 #define SECS_PER_DAY 86400		// 24*60*60 = 86400
 
 // @@@ Forward declarations ...
-void fifo_push(char *p);
+void fifo_push(char *p, struct stat *sb, int w_id);
 int fifo_pop(char *p);
 void directory_scan(int w_id);
 void abend(char *msg);
 void *worker_thread(void *parg);
 
 // @@@ Global variables written *only* by the main controlling thread ...
+typedef enum {BORN=0, IDLE, BUSY} wstate_t;	// Worker state
 static int N_WORKERS = 1;			// <N> from "-dop=<N>"
 static int MAX_OPEN_FILES = 0;			// Calculated to compare with getrlimit(NOFILES)
-static int ABSPATH_MODE = 0;			// True when absolute paths used
-static int Opt_SKIPSNAPS = 1;		// Skip .snapshot[s] dirs unless '+.snapshot' specified
+static int ABSPATH_MODE = 0;			// True when absolute paths used (FUTURE: eliminate)
+static int Opt_SKIPSNAPS = 1;			// Skip .snapshot[s] dirs unless '+.snapshot' specified
 static int Opt_TSTAT = 0;				// Show timed statistics when +tstat used
 static int Opt_GZ = 0;				// gzip output streams when '-gz' used
 static int Opt_REDACT = 0;			// Redact output (hex inodes instead of names)
@@ -294,8 +296,6 @@ static time_t T_START_s;			// ... and again in seconds.
 #define MAXPATHS 64				// Arbitrary limit for [source] or [target] multi-paths
 #define PROGRESS_TIME_INTERVAL 3600/4		// Seconds between progress outputs to log file
 
-typedef enum {BORN=0, IDLE, BUSY} wstate_t;	// Worker state
-
 // @@@ Statistics blocks ...
 //
 // Statistics are generaly collected in three phases to avoid locking operations;
@@ -340,12 +340,9 @@ static PWALK_STATS_T *WS[MAX_WORKERS+1];	// 'WS' is 'Worker Stats', calloc'd (pe
 // LogMsg_mutex for serializing write access to pwalk.log (in LogMsg()) ...
 static pthread_mutex_t LOGMSG_mutex;
 
-// WAKEUP counter and mutex, maintained by N worker_threads ...
-static pthread_mutex_t WAKEUP_mutex;
-count_64 N_Worker_Wakeups;
-
 // MP_mutex for MP-coherency of worker status and FIFO state ...
 static pthread_mutex_t MP_mutex;
+count_64 N_Worker_Wakeups;
 
 // FIFO_mutex for access to the FIFO file ...
 static pthread_mutex_t FIFO_mutex;
@@ -787,7 +784,7 @@ worker_err_create(int w_id)
    WDAT.werr = fopen(strbuf, "wx");			// O_EXCL create
    if (WDAT.werr == NULL)
       abend("Cannot create worker's .err file!\n");
-   setvbuf(WDAT.werr, NULL, _IOFBF, 0);			// Line-buffered
+   setvbuf(WDAT.werr, NULL, _IOLBF, 0);			// Line-buffered
    sprintf(strbuf, "NOTICE: Worker created %s%cworker-%03d.err\n", OUTPUT_DIR, PATHSEPCHR, w_id);
    LogMsg(strbuf, 1);
 
@@ -863,9 +860,6 @@ init_main_mutexes(void)
 
    // MP mutex for MP-coherent global data access ...
    if (pthread_mutex_init(&MP_mutex, &mattr)) abend("FATAL: Can't init MP mutex!\n");
-
-   // WAKEUP mutex for wakeup counter ...
-   if (pthread_mutex_init(&WAKEUP_mutex, &mattr)) abend("FATAL: Can't init WAKEUP mutex!\n");
 
    // LOGMSG mutex for serializing logfile messages ...
    if (pthread_mutex_init(&LOGMSG_mutex, &mattr)) abend("FATAL: Can't init LOGMSG mutex!\n");
@@ -1044,7 +1038,7 @@ str_dump(char *str, char *dump)
    return (dump);
 }
 
-// skip_this_directory() - TRUE iff passed a directory path that should be silently skipped (ignored).
+// skip_this_directory() - TRUE iff passed directory path should be skipped (ignored).
 // By default, skips these directories;
 //	.snapshot[s] - unless +snapshot was specified
 //	.isi-compliance - OneFS SmartLock Compliance-mode -audit mode.
@@ -1053,30 +1047,45 @@ str_dump(char *str, char *dump)
 // NOTE: ONLY to be called from fifo_push(), so ONLY directory paths are passed-in!
 
 int
-skip_this_directory(char *dirpath)
+skip_this_directory(char *dirpath, struct stat *sb, int w_id)
 {
    char *fname_p;
+   char *skip = NULL;
+
+   // @@@ Name-based skips ...
 
    // Isolate filename ...
    fname_p = rindex(dirpath, PATHSEPCHR);
    if (fname_p == NULL) fname_p = dirpath;
    else fname_p += 1;
 
-   // Directories we MIGHT skip ALL begin with a '.' ...
-   if (fname_p[0] != '.') return FALSE;
-
-   // Skip .ifsvar -- but only when it's an exact match ...
-   if (strcmp(dirpath, ".ifsvar") == 0) return(TRUE);
-
-   // Skip .isi-compliance in -audit mode ...
-   if (Cmd_AUDIT && strcmp(fname_p, ".isi-compliance") == 0) return TRUE;
-
-   // SKip .snapshot[s] unless +snapshot was specified ...
-   if (Opt_SKIPSNAPS) {
-      if (strcmp(fname_p, ".snapshot") == 0) return TRUE;
-      if (strcmp(fname_p, ".snapshots") == 0) return TRUE;
+   // Directories we skip by name all begin with a '.' ...
+   if (fname_p[0] == '.') {
+      if (strcmp(dirpath, ".ifsvar") == 0)
+         skip = "Skipping .ifsvar";
+      else if (Cmd_AUDIT && strcmp(fname_p, ".isi-compliance") == 0)
+         skip = "Skipping .isi-compliance";
+      else if (Opt_SKIPSNAPS) {
+         if (strcmp(fname_p, ".snapshot") == 0) skip = "Skipping .snapshot";
+         if (strcmp(fname_p, ".snapshots") == 0) skip = "Skipping .snapshots";
+      }
+      if (skip) goto out;
    }
-   return FALSE;
+
+   // @@@ Quality-based skips ...
+
+   // FUTURE: Under OSX, some /dev/fd/<n> files will appear to be directories,
+   // but they cannot be opened by opendir() and will generate an error.
+
+   // FUTURE: If -xdev is specified, do not push directories with DEVID different from SOURCE ...
+
+out:
+   if (skip) {
+      fprintf(WERR, "NOTICE: %s @ \"%s\"\n", skip, dirpath);
+      return TRUE;
+   } else {
+      return FALSE;
+   }
 }
 
 // catpath3() - Create concatenation of 3 passed args.
@@ -1417,6 +1426,24 @@ bad_timespec(struct timespec * tsp)
    // if (timestamp == 1833029933770) return 1;
    // if (timestamp > 0xffffffff) return 1;
    return 0;
+}
+
+void
+printf_stat(struct stat *sb)
+{
+   printf("     st_dev=%d\n", sb->st_dev);
+   printf("     st_ino=%llu\n", sb->st_ino);
+   printf("    st_mode=%07o\n", sb->st_mode);
+   printf("   st_nlink=%d\n", sb->st_nlink);
+   printf("     st_uid=%d\n", sb->st_uid);
+   printf("     st_gid=%d\n", sb->st_gid);
+   printf("    st_rdev=%d\n", sb->st_rdev);
+   printf("    st_size=%lld\n", sb->st_size);
+   printf(" st_blksize=%d\n", sb->st_blksize);
+   printf("  st_blocks=%llu\n", sb->st_blocks);
+#if !defined(__LINUX__)
+   printf("   st_flags=%o\n", sb->st_flags);
+#endif
 }
 
 // format_epoch_ts() - compactly express a full-precision timespec in a format that
@@ -2014,29 +2041,46 @@ selected(char *filename, struct stat *sb)
 
 // @@@ SECTION: FIFO management @@@
 
-// Must be re-entrant because multiple workers may be pushing new pathnames at the same time.
-// Access is serialized by MP_mutex. These push and pop routines are atomic as far as the
-// rest of the program logic is concerned; so the depth of the FIFO is never ambiguous for
-// even an instant.
+// FIFO logic must be re-entrant because multiple workers may be trying to push newly-discovered
+// directory paths at the same time.  FIFO access is serialized by MP_mutex. These push and pop
+// routines are atomic as far as the rest of the program logic is concerned; so the depth of the
+// FIFO is never ambiguous for even an instant.
 
-// fifo_push() - Push passed directory path onto file-based FIFO (pwalk.fifo) ....
+// fifo_push() - Push passed directory path onto file-based FIFO (pwalk.fifo).
 
 void
-fifo_push(char *pathname)
+fifo_push(char *pathname, struct stat *sb, int w_id)
 {
-   char msg[2048];
+   char ascii_path[8192];
+   char *pi, *po;
+
+   // ASCII-fy: Since passed-in pathname might be in a non-ASCII character set, so we make an
+   // 'ASCII-fied' copy to push to the FIFO -- which must have newline-delimited pathnames.
+   // fifo_pop() will (must) reverse this tranformation!
+   for (pi=pathname, po=ascii_path; *pi; pi++) {
+      if (*pi == '\\') {
+         *po++ = '\\';
+         *po++ = '\\';
+      } else if (isgraph(*pi)) {
+         *po++ = *pi;
+      } else {
+         *po++ = '\\';
+         *po++ = 'x';
+         *po++ = "0123456789abcdef"[(*pi & 0xf0) >> 4];
+         *po++ = "0123456789abcdef"[(*pi & 0xf)];
+      }
+      assert (po < ascii_path+8100);
+   }
+   *po = NUL;
 
    // We usually skip .snapshot and .isi-compliance directories entirely ...
-   if (skip_this_directory(pathname)) {
-      sprintf(msg, "NOTICE: Skipping \"%s\"\n", pathname);
-      LogMsg(msg, 1);
+   if (skip_this_directory(pathname, sb, w_id))
       return;
-   }
 
    assert (Fpush != NULL);
    if (pthread_mutex_lock(&FIFO_mutex))				// +++ FIFO lock +++
       abend("FATAL: Can't get FIFO lock in fifo_push()!\n");
-   fprintf(Fpush, "%s\n", pathname);				// push
+   fprintf(Fpush, "%s\n", ascii_path);				// push ascii_path
    FIFO_PUSHES += 1;
    pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
 }
@@ -2047,11 +2091,22 @@ fifo_push(char *pathname)
 // If passed pathname is NULL, do not actually pop the FIFO; just determine its depth.
 // If passed pathname is not NULL, pop FIFO into the passed buffer.
 
+char
+hex_cval(char ch)
+{
+   if (ch >= '0' && ch <= '9') return (ch - '0');
+   else if (ch >= 'a' && ch <= 'f') return (ch - 'a' + 10);
+   else if (ch >= 'A' && ch <= 'F') return (ch - 'A' + 10);
+   else assert("hex_cval() badarg!"==NULL);
+}
+
 int
 fifo_pop(char *pathname)
 {
-   char *p;
+   char *pi, *po;;
+   char ch;
    int fifo_depth, rc;
+   char ascii_path[8192];
 
    assert(Fpop != NULL);	// File handle for FIFO pops
 
@@ -2059,20 +2114,37 @@ fifo_pop(char *pathname)
       abend("FATAL: Can't get FIFO lock in fifo_pop()!\n");
    fifo_depth = FIFO_PUSHES - FIFO_POPS;
    if (fifo_depth == 0 || pathname == NULL) {
-      pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
+      pthread_mutex_unlock(&FIFO_mutex);			// --- FIFO lock ---
       return(fifo_depth);
    }
    // Still holding FIFO lock ...
    pathname[0] = '\0';
-   if (fgets(pathname, MAX_PATHLEN, Fpop) == NULL)	// pop (or die!)
+   if (fgets(ascii_path, sizeof(ascii_path)-1, Fpop) == NULL)	// pop ascii_path (or die!)
       abend("FATAL: fifo_pop() read failure!\n");
    FIFO_POPS += 1;
    pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
 
-   // Details, details ...
-   p = index(pathname, '\n'); // Remove newline or die ...
-   if (p) *p = '\0';
-   else abend("FATAL: Popped FIFO entry ill-formed; missing newline!\n");
+   // De-ASCII-fy: Copy ascii_path to outpt pathname, de-ASCII-fying as we go ...
+   // FUTURE: This logic assumes PATHSEPCHR is '/', not '\'! (klooge)
+   // FUTURE: functionally encapsulate ASCII-fy and de-ASCII-fy operations
+   for (pi=ascii_path, po=pathname; *pi; ) {
+      if (*pi == '\\') {
+         if (*(pi+1) == 'x') {		// NEXT 2 are hex digits or die!
+            *po++ = (hex_cval(pi[2]) << 4) | (hex_cval(pi[3]));
+            pi += 4;
+         } else {			// NEXT 1 literally ...
+            *po++ = *(pi+1);
+            pi += 2;
+         }
+      } else {				// this 1 literally ...
+         *po++ = *pi++;
+      }
+      assert (po < (pathname+MAX_PATHLEN-1));
+   }
+   assert (po > pathname);		// MUST be non-empty string!
+   assert (*(po-1) == '\n');		// MUST have newline from fgets()!
+   *(po-1) = NUL;			// Over-write trailing newline ...
+   // strlen(pathname) will be (po - pathname)
 
    return(fifo_depth);
 }
@@ -2110,40 +2182,33 @@ worker_thread(void *parg)
    WDAT.wstate = IDLE;
    pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
 
-   // Wakeup whenever signaled by our condition variable ...
-   while (1) {							// Multiple wakeup loop
-      while (WDAT.wstate == IDLE) {				// Wakeup polling loop
-         // Block on our condition variable ...
+   while (1) {							// Multiple wakeup loop ...
+      if (WDAT.wstate == IDLE) {
+         // Block and wakeup when signaled by our condition variable ...
          pthread_cond_wait(&(WDAT.WORKER_cv), &(WDAT.WORKER_cv_mutex));
-         // Anything to do?
-         if (fifo_pop(NULL)) {
-            // Transition to BUSY ...
-            pthread_mutex_lock(&MP_mutex);			// +++ MP lock +++
-            WDAT.wstate = BUSY;
-            pthread_mutex_unlock(&MP_mutex);			// --- MP lock ---
-         }
+         // Transition from IDLE to BUSY ...
+         pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
+         WDAT.wstate = BUSY;
+         wakeups = N_Worker_Wakeups += 1;
+         pthread_mutex_unlock(&MP_mutex);			// --- MP lock ---
+         sprintf(msg, "@ Worker %d wakes (wakeup #%lu)\n", w_id, wakeups);
+         LogMsg(msg, 1);
       }
 
-      // WAKEUP accounting and logging ...
-      if (pthread_mutex_lock(&WAKEUP_mutex))			// +++ WAKEUP lock +++
-         abend("FATAL: Can't get WAKEUP lock to increment N_Worker_Wakeups!\n");
-      wakeups = N_Worker_Wakeups += 1;
-      pthread_mutex_unlock(&WAKEUP_mutex);			// --- WAKEUP lock ---
-      sprintf(msg, "@ Worker %d wakeup (wakeup #%lu)\n", w_id, wakeups);
-      LogMsg(msg, 1);
-
-      // Remain BUSY as long as the FIFO is not empty ...
+      // Now that we're BUSY, stay busy as long as FIFO can be popped ...
+      // ... but yield_cpu() to allow other threads a chance to PUSH new FIFO entries ...
       while (fifo_pop(WDAT.DirPath)) {
-         if (!WDAT.wlog) worker_log_create(w_id);
          directory_scan(w_id);					// $$$ WORKER'S MISSION $$$
+         yield_cpu();
       }
 
-      // Transition from BUSY to IDLE and log it...
+      // Transition from BUSY to IDLE ...
       pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
       WDAT.wstate = IDLE;
       pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
       sprintf(msg, "@ Worker %d idle\n", w_id);
       LogMsg(msg, 1);
+      yield_cpu();
    }
 }
 
@@ -2403,6 +2468,9 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    char acl4OUTmode;			// 'o' (file) or 'p' (pipe)
 #endif // PWALK_ACLS
 
+   // Make sure output file is ready ...
+   if (!WDAT.wlog) worker_log_create(w_id);
+
    // @@@ ACCESS (directory): opendir() just-popped directory ...
    RelPathDir = WDAT.DirPath;
    if (VERBOSE) {
@@ -2504,7 +2572,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
       }
       if (aclstat) {
          acl_present = TRUE;
-         DS.NACLs += 1;			// Only count *directories* HERE, when we pop them, not when they are pushed
+         DS.NACLs += 1;
       } else strcat(mode_str, ".");
    }
 #endif // PWALK_ACLS
@@ -2644,15 +2712,6 @@ scandirloop:
          }
       }
 
-      // @@@ ACTION (dirent): Skip entries with embedded newlines!
-      // "Man oh man, will THEY ever mess up our FIFO-in-a-file scheme!"
-      if (index(FileName, '\n')) {
-         WS[w_id]->NWarnings += 1;
-         fprintf(WERR, "WARNING: In \"%s\", FileName has embedded newline! Skipped ...\n\t\"%s\"\n",
-            AbsPathDir, str_dump(FileName, dump_str));
-         continue;		// No output!  Skip to next dirent!
-      }
-
       // @@@ ACTION (dirent): Quietly skip files that are not selected ...
       if (Opt_SELECT && !selected(RelPathName, &file_stat)) continue;
 
@@ -2713,13 +2772,13 @@ scandirloop:
          }
          if (aclstat) {
             acl_present = TRUE;
-            if (!S_ISDIR(file_stat.st_mode)) DS.NACLs += 1;	// Only count *directories* when we pop them (ie: not here) ...
+            if (!S_ISDIR(file_stat.st_mode)) DS.NACLs += 1;
          } else strcat(mode_str, ".");
       }
 #endif // PWALK_ACLS
       if (acl_present && Opt_MODE && P_ACL_P) strcat(mode_str, "+");	// Actually only works in OneFS?
 
-      // @@@ GATHER (dirent): Space accounting information ... and PUSH any directories encountered ...
+      // @@@ GATHER (dirent): Accumulate d/-/s/o counts ... and PUSH any directories encountered ...
       if (S_ISDIR(file_stat.st_mode)) {		// directory
          DS.NDirs += 1;
          // NOTE: If we are 'fixing' ACLs, we need to fix directory ACLs BEFORE they are PUSH'ed!
@@ -2727,12 +2786,12 @@ scandirloop:
          // As soon as we PUSH this directory, some other worker may POP it, and it will not
          // do ACL inheritance operations correctly if we have not fixed the directory's ACL first.
          //onefs_acl_inherit(CurrentDirectoryACL, -1, RelPathName, isdir, depth);	// ##### klooge INCOMPLETE
-         fifo_push(RelPathName);
-      } else if (S_ISREG(file_stat.st_mode)) {
+         fifo_push(RelPathName, &file_stat, w_id);
+      } else if (S_ISREG(file_stat.st_mode)) {	// ordinary
          DS.NFiles += 1;
-      } else if (S_ISLNK(file_stat.st_mode)) {
+      } else if (S_ISLNK(file_stat.st_mode)) {	// symlink
          DS.NSymlinks += 1;
-      } else {
+      } else {					// other
          DS.NOthers += 1;
       }
 
@@ -3149,10 +3208,10 @@ process_arglist(int argc, char *argv[])
       } else if (*arg == '-' || *arg == '+') {		// Unknown +/- option ...
          fprintf(stderr, "ERROR: \"%s\" option unknown!\n", arg);
          exit(-1);
-      } else { // Everything else is assumed to be a <directory> arg ...
+      } else { 		// Everything else assumed to be a <directory> arg ...
+         dirarg_count += 1;
          if (PWdebug) fprintf(Plog, "DEBUG: directory[%d] = \"%s\"\n", dirarg_count, arg);
          // NOTE: our FIFO is only created AFTER all args are validated, so we can't push these yet!
-         dirarg_count++;
          // Enforce that all <directory> args *must* either be absolute or relative ...
          path_mode = (*arg == PATHSEPCHR) ? absolute : relative;
          if (dirarg_mode == none) {
@@ -3297,11 +3356,6 @@ process_arglist(int argc, char *argv[])
       badarg = TRUE;
    }
 
-   if (dirarg_count < 1) {							// Most basic check is last
-      fprintf(Plog, "ERROR: No <directory> arguments passed!\n");
-      badarg = TRUE;
-   }
-
    if (badarg)
       exit(-1);
 }
@@ -3320,6 +3374,7 @@ main(int argc, char *argv[])
    struct rusage p_usage, c_usage;
    struct tms cpu_usage;
    struct utsname uts;
+   int dirarg_count = 0;	// Default to "." if none on command line
    int exit_status = 0;		// Succeed by default
 
    // ------------------------------------------------------------------------
@@ -3389,10 +3444,14 @@ main(int argc, char *argv[])
    fprintf(Plog, "NOTICE: pid = %d\n", getpid());
    fprintf(Plog, "NOTICE: MAX_OPEN_FILES = %d\n", MAX_OPEN_FILES);
 
-   for (i=1; i < argc; i++)	// Push initial command-line <directory> args to FIFO ...
+   // Push initial command-line <directory> args to FIFO ...
+   for (i=1; i < argc; i++)
       if (*argv[i] != '-' && *argv[i] != '+') {
-         fifo_push(argv[i]);
+         dirarg_count += 1;
+         fifo_push(argv[i], NULL, 0);
       }
+   if (dirarg_count == 0)	// Default directory arg is just "."
+      fifo_push(".", NULL, 0);
 
    // Force flush Plog so far. HENCEFORTH, Plog WRITES from WORKERS GO THRU LogMsg() ...
    LogMsg(NULL, 1);

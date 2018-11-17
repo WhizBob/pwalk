@@ -15,6 +15,10 @@
 //	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
 // ...
 // Version 2.06 - 2018/09/?? - New Features in-process
+//	- Added "tolerate '\n' and other binary in FIFO pathnames"
+//	- Bugfix; .err outputs now line-buffered (was erroneously full-buffered)
+//	- Default <directory> is now "." (relative to SOURCE) if none given on command line
+//	- Bugfix: "Hang on starting" - streamlined directory_scan() & eliminated WAKEUP mutex
 //	- Added read and write of NTFS ACLs (NFS4, OSX-native, OneFS-native, and possibly Windows-native)
 //	- Added -xdev option (like in find(1); do not span filesystems) (based on stat(2) st_dev)
 //	- Added +md5 and +sha1 options (IN-PROGRESS; calculate using same f() as +crc!)

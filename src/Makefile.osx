@@ -16,7 +16,9 @@ all: pwalk hacls chexcmp touch3 mystat pwalk_ls_cat
 # Every make forces a compile, because the binaries are NOT in this directory ...
 
 pwalk: $(PWALK_C) $(PWALK_H)
+	chmog 755 rsneed - ../bin/osx/pwalk
 	$(CC)	$(PWALK_C) -o $(BINDIR)/pwalk $(PWALK_FLAGS)
+	chmog 4755 root - ../bin/osx/pwalk
 
 hacls: hacls.c pwalk_acls.h
 	$(CC)	hacls.c -o $(BINDIR)/hacls
