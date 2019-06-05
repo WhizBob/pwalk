@@ -9,7 +9,17 @@
 BINDIR=../bin/osx
 PWALK_C = pwalk.c pwalk_onefs.c pwalk_report.c pwalk_sums.c
 PWALK_H = pwalk.h pwalk_onefs.h pwalk_report.h pwalk_sums.h
-PWALK_FLAGS=-lm -lpthread
+PWALK_FLAGS=-lm
+
+# Debug ...
+# -fsanitize=thread	O
+# -fsanitize=safe-stack	X
+# -fsanitize=memory	X
+# -fsanitize=address
+# -fsanitize=
+# -fsanitize=
+# -fsanitize=
+PWALK_FLAGS=-lm -g
 
 all: pwalk hacls chexcmp touch3 mystat pwalk_ls_cat
 

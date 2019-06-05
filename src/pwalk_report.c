@@ -116,7 +116,7 @@ save_string(char *str)
 // pwalk_report_bind() - bind worker-specific addresses into RPT_LINE[]
 
 void
-pwalk_report_bind(char *path, struct stat *sb, worm_info_t *wi)
+pwalk_report_bind(char *path, struct stat *sb, pw_ifs_info_t *wi)
 {
    int i, found;
 

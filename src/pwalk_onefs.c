@@ -85,16 +85,79 @@ pwalk_debug_sdp(struct ifs_security_descriptor *p, char *msg)
 
 #ifdef REAL_SOON_NOW
 
-struct pctl2_get_expattr_args {
-        unsigned int                    ge_cookie;
+"One stop shop" for IFS metadata is ...
+	int pctl2_get_expattr(int fd, struct pctl2_get_expattr_args *ge));
+... underlying this "one stop shop" for file metadata is ...
+	static int _pctl2_get_expattr(struct ifs_op *io, struct pctl2_get_expattr_args *args)
+... which reveals from whence the following various elements are derived ...
 
-        /* Policy stuff */
-        struct protection_level         ge_max_child_protection;
-        struct protection_policy        ge_file_protection_policy;
-        ifs_disk_pool_policy_id_t       ge_disk_pool_policy_id;
-        ifs_disk_pool_id_t              ge_data_disk_pool_id;
-        ifs_disk_pool_id_t              ge_metadata_disk_pool_id; 
-	...
+// pctl2_get_expattr() gets the following file metadata ...
+//
+// struct pctl2_get_expattr_args {
+//    unsigned int                      ge_cookie;
+//   
+//    /* Policy stuff */
+//    struct protection_level           ge_max_child_protection;
+//    struct protection_policy          ge_file_protection_policy;
+//    ifs_disk_pool_policy_id_t         ge_disk_pool_policy_id;
+//    ifs_disk_pool_id_t                ge_data_disk_pool_id;			@@ data disk pool!
+//    ifs_disk_pool_id_t                ge_metadata_disk_pool_id;		@@ metadata disk pool!
+//   
+//    /* Current protection */
+//    struct protection_level           ge_current_protection;
+//   
+//    /* Restripe-oriented members */
+//    enum restripe_state               ge_state;
+//    enum restripe_type                ge_purpose;
+//    uint64_t        	                ge_total_work;
+//    uint64_t        	                ge_work_remaining;
+//   
+//    /* Flags */
+//    fflags_t        	                ge_inode_flags;				@@ Decode?
+//    bool                              ge_inherit_protection : 1;
+//    bool                              ge_coalescing_on : 1;			@@ Manual Coal?
+//    bool                              ge_coalescing_ec : 1;			@@ Manual EConly?
+//    bool                              ge_inherit_coalescing : 1;
+//    bool                              ge_packing_policy : 1;
+//   
+//    /* Is this an SBT? */
+//    bool                              ge_is_sbt : 1;
+//   
+//    /* Degraded status */
+//    bool                              ge_needs_repair : 1;			@@ Count?
+//    bool                              ge_needs_reprotect : 1;			@@ Count?
+//   
+//    /* Degraded status on the LIN tree entry */
+//    bool                              ge_lin_entry_needs_repair : 1;		@@ Count?
+//   
+//    /* Manually managed flags */						@@ Count?
+//    bool                              ge_manually_manage_access : 1;		@@ OR these for "manual"
+//    bool                              ge_manually_manage_packing : 1;		@@ OR these for "manual"
+//    bool                              ge_manually_manage_protection : 1;	@@ OR these for "manual"
+//    bool                              ge_has_nfattrs : 1;			@@ "New File Attrs"
+//   
+//    /* Inode addrs */
+//    int                               ge_num_iaddrs;
+//    struct ifs_baddr        	        ge_iaddrs[MAX_MIRRORS];
+//    uint32_t                          ge_create_time;
+//    uint32_t                          ge_create_timensec;
+//    uint32_t                          ge_rename_time;
+//   
+//    /* Layout information */
+//    int                               ge_at_r_drives;				@@ WDL width
+//    ifs_access_pattern_t              ge_access_pattern;			@@ -a
+//    enum ifs_ssd_strategy             ge_ssd_strategy;			@@ SSD
+//    enum ifs_ssd_layout_status	ge_ssd_status;
+//   
+//    /* New File Attributes */
+//    struct ifs_new_file_attributes	ge_nfattrs;				@@ See also: format_new_file_attributes()
+//    uint32_t        	                ge_cloudpools_flags;			@@ CP .. no mask??
+//    uint64_t        	                ge_cloudpools_size;			@@ CP .. remote size w/ compresssion?
+//    uint32_t        	                ge_cloudpools_mtime;
+//    uint32_t        	                ge_cloudpools_mtimensec;
+//    uint32_t        	                ge_cloudpools_pad; /* XXXegc: compiler padding */
+//    uint64_t                          ge_create_verifier;
+// };
 
 OK, no need for C++
 /usr/lib/libisi_diskpool.so  is the library
@@ -119,73 +182,6 @@ and
 3453    bool system : 1;                /* disk pool */ 
 ... so finally, that's where the name lives
 
-// pctl2_get_expattr() gets the following file metadata ...
-//
-// struct pctl2_get_expattr_args {
-//    unsigned int                      ge_cookie;
-//   
-//    /* Policy stuff */
-//    struct protection_level           ge_max_child_protection;
-//    struct protection_policy          ge_file_protection_policy;
-//    ifs_disk_pool_policy_id_t         ge_disk_pool_policy_id;
-//    ifs_disk_pool_id_t                ge_data_disk_pool_id;
-//    ifs_disk_pool_id_t                ge_metadata_disk_pool_id;
-//   
-//    /* Current protection */
-//    struct protection_level           ge_current_protection;
-//   
-//    /* Restripe-oriented members */
-//    enum restripe_state               ge_state;
-//    enum restripe_type                ge_purpose;
-//    uint64_t        	                ge_total_work;
-//    uint64_t        	                ge_work_remaining;
-//   
-//    /* Flags */
-//    fflags_t        	                ge_inode_flags;
-//    bool                              ge_inherit_protection : 1;
-//    bool                              ge_coalescing_on : 1;
-//    bool                              ge_coalescing_ec : 1;
-//    bool                              ge_inherit_coalescing : 1;
-//    bool                              ge_packing_policy : 1;
-//   
-//    /* Is this an SBT? */
-//    bool                              ge_is_sbt : 1;
-//   
-//    /* Degraded status */
-//    bool                              ge_needs_repair : 1;
-//    bool                              ge_needs_reprotect : 1;
-//   
-//    /* Degraded status on the LIN tree entry */
-//    bool                              ge_lin_entry_needs_repair : 1;
-//   
-//    /* Manually managed flags */
-//    bool                              ge_manually_manage_access : 1;
-//    bool                              ge_manually_manage_packing : 1;
-//    bool                              ge_manually_manage_protection : 1;
-//    bool                              ge_has_nfattrs : 1;
-//   
-//    /* Inode addrs */
-//    int                               ge_num_iaddrs;
-//    struct ifs_baddr        	        ge_iaddrs[MAX_MIRRORS];
-//    uint32_t                          ge_create_time;
-//    uint32_t                          ge_create_timensec;
-//    uint32_t                          ge_rename_time;
-//   
-//    /* Layout information */
-//    int                               ge_at_r_drives;
-//    ifs_access_pattern_t              ge_access_pattern;
-//    enum ifs_ssd_strategy             ge_ssd_strategy;
-//    enum ifs_ssd_layout_status	ge_ssd_status;
-//   
-//    /* New File Attributes */
-//    struct ifs_new_file_attributes	ge_nfattrs;
-//    uint32_t        	                ge_cloudpools_flags;
-//    uint64_t        	                ge_cloudpools_size;
-//    uint32_t        	                ge_cloudpools_mtime;
-//    uint32_t        	                ge_cloudpools_mtimensec;
-//    uint32_t        	                ge_cloudpools_pad; /* XXXegc: compiler padding */
-//    uint64_t                          ge_create_verifier;
-// };
 
 #endif
 
@@ -287,7 +283,7 @@ onefs_get_sids(const int fd, char *owner_sid, char *group_sid)
 // 	struct worm_state *worm_out)
 
 int
-onefs_get_w_stat(const ino_t lin, worm_info_t *wi)	// klooge: PLACEHOLDER
+onefs_get_w_stat(const ino_t lin, pw_ifs_info_t *wi)	// klooge: PLACEHOLDER
 {
    struct worm_state worm;
 

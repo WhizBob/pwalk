@@ -14,13 +14,21 @@
 //	Make concurrency runtime-dynamic to allow variable impact
 //	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
 // ...
-// Version 2.06 - 2018/09/?? - New Features in-process
+// Version 2.07 - 2019/02 - New Features in-process
+//	- Added -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
+//	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)
+//	- Added tracking of largest inode number 'seen' and 'selected'
+//	- Fixed -gz on OSX by using fflush() plus fclose() on pipes instead of pclose()
+//	- Fixed new threading model on OSX by correcting worker mutex initializations
+//	- New thread management has no polling loop, and shows work time more accurately
+//	- Re-structured thread management to solve hang-before-exit race conditions
+//	- Bugfix: all pwalk outputs now owned by pwalk's user rather than setuid/setgid identity
+// Version 2.06 - 2018/09 - 2019/01 - New Features in-process
 //	- Added "tolerate '\n' and other binary in FIFO pathnames"
 //	- Bugfix; .err outputs now line-buffered (was erroneously full-buffered)
 //	- Default <directory> is now "." (relative to SOURCE) if none given on command line
 //	- Bugfix: "Hang on starting" - streamlined directory_scan() & eliminated WAKEUP mutex
 //	- Added read and write of NTFS ACLs (NFS4, OSX-native, OneFS-native, and possibly Windows-native)
-//	- Added -xdev option (like in find(1); do not span filesystems) (based on stat(2) st_dev)
 //	- Added +md5 and +sha1 options (IN-PROGRESS; calculate using same f() as +crc!)
 //		... optionally convey in wacls data stream
 //		... store md5 and/or sha1 checksums as an attribute during -cp operations

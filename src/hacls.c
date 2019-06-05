@@ -197,7 +197,7 @@ nfs4_getfacl_ace(char *line, int *n_ace)
       case 'r': ace_mask |= ACE4_READ_DATA; break;		// read-data / list-directory
       case 'w': ace_mask |= ACE4_WRITE_DATA; break;		// write-data / create-file
       case 'a': ace_mask |= ACE4_APPEND_DATA; break;		// append-data / create-subdirectory
-      case 'x': ace_mask |= ACE4_EXECUTE; break;		// execute
+      case 'x': ace_mask |= ACE4_EXECUTE; break;		// execute / traverse
       case 'd': ace_mask |= ACE4_DELETE; break;			// delete
       case 'D': ace_mask |= ACE4_DELETE_CHILD; break;		// delete-child (directories only)
       case 't': ace_mask |= ACE4_READ_ATTRIBUTES; break;	// read-attrs
@@ -237,9 +237,9 @@ onefs_ace(char *line)
    // Parsing pointer moves through line ...
    pp = line;
 
-   // There MUST be an initial SPACE and a numerical ACE index followed by ": " ...
-   if (*pp++ != ' ') return(0);
-   if (sscanf(pp, "%d: %n", &n_ace, &nch) < 1) return(0);	// No ACE index present ...
+   // Pre-OneFS 8.1 (?) ACEs were preceded by a SPACE that was omitted in later releases.
+   //=====if (*pp++ != ' ') return(0);
+   if (sscanf(pp, " %d: %n", &n_ace, &nch) < 1) return(0);	// No ACE index present ...
    pp += nch;
    if (DEBUG) printf("Got <n_ace> \"%d\"\n", n_ace);
 

@@ -81,7 +81,7 @@ begin:
       "WRITE_NAMED_ATTRS               'N' - can write (N)amed attr of file or directory");
    mask=0x000020; a=((m1&mask) != 0); b=((m2&mask) != 0); p=((a|b) != 0); CMP_S; MBG_C;
    if (p) printf("%s%06x %c%s\n", cmp_s, mask, mbg_c,
-      "EXECUTE                         'x' - can e(x)ecute file -or- traverse directory");
+      "EXECUTE / TRAVERSE              'x' - can e(x)ecute file -or- traverse directory");
    mask=0x000040; a=((m1&mask) != 0); b=((m2&mask) != 0); p=((a|b) != 0); CMP_S; MBG_C;
    if (p) printf("%s%06x %c%s\n", cmp_s, mask, mbg_c,
       "DELETE_CHILD                    'D' - can (D)elete file or directory within a directory");

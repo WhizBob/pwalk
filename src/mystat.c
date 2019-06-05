@@ -60,43 +60,65 @@ int
 main(int argc, char *argv[])
 {
    struct stat sb;
-   char atime_str[64], mtime_str[64], ctime_str[64], btime_str[64];
-   int fd, rc;
+   char *filename, atime_str[64], mtime_str[64], ctime_str[64], btime_str[64];
+   char st_gen_str[32], st_flags_str[32];
+   int fd, rc, i;
 
-   // Rather than lstat() here, we open() to bypass possible NFS stale cache ...
-   fd = open(argv[1], O_RDONLY|O_NONBLOCK|O_NOFOLLOW);
-   if (fd < 0) {
-      printf("mystat: cannot open \"%s\" errno=%d \"%s\"\n", argv[1], errno, strerror(errno));
-      exit(-1);
+   for (i=1; i<argc; i++) {
+      filename = argv[i];
+
+      // Rather than lstat() here, we open() to bypass possible NFS stale cache ...
+      fd = open(filename, O_RDONLY|O_NONBLOCK|O_NOFOLLOW);
+      if (fd < 0) {
+         printf("mystat: cannot open \"%s\" errno=%d \"%s\"\n", filename, errno, strerror(errno));
+         continue;
+      }
+      if ((rc = fstat(fd, &sb))) {
+         printf("mystat: cannot stat \"%s\" errno=%d \"%s\"\n", filename, errno, strerror(errno));
+         continue;
+      }
+      close(fd);
+   
+      // Format stat(2) results ..
+#if defined(__LINUX__)
+      ctime_extended(&(sb.st_atim), atime_str);
+      ctime_extended(&(sb.st_mtim), mtime_str);
+      ctime_extended(&(sb.st_ctim), ctime_str);
+      strcpy(btime_str, "n/a");
+      strcpy(st_gen_str, "n/a");
+      strcpy(st_flags_str, "n/a");
+#else
+      ctime_extended(&(sb.st_atimespec), atime_str);
+      ctime_extended(&(sb.st_mtimespec), mtime_str);
+      ctime_extended(&(sb.st_ctimespec), ctime_str);
+      ctime_extended(&(sb.st_birthtimespec), btime_str);
+      sprintf(st_gen_str, "%d", sb.st_gen);
+      sprintf(st_flags_str, "0x%X", sb.st_flags);
+#endif
+      printf("%s:\n     st_dev=%d st_rdev=%d st_ino=%s st_gen=%s st_flags=%o\n     st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d\n     st_size=%lld st_blksize=%d st_blocks=%llu\n     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
+        filename,
+   	sb.st_dev,
+   	sb.st_rdev,
+   	onefs_inode_str(sb.st_ino),
+   	st_gen_str,
+   	st_flags_str,
+   	sb.st_mode,
+   	sb.st_nlink,
+   	sb.st_uid,
+   	sb.st_gid,
+   	sb.st_size,
+   	sb.st_blksize,
+   	sb.st_blocks,
+#if defined(__LINUX__)
+   	sb.st_atim.tv_sec, sb.st_atim.tv_nsec, sb.st_atim.tv_sec, atime_str,
+   	sb.st_mtim.tv_sec, sb.st_mtim.tv_nsec, sb.st_mtim.tv_sec, mtime_str,
+   	sb.st_ctim.tv_sec, sb.st_ctim.tv_nsec, sb.st_ctim.tv_sec, ctime_str,
+   	0L, 0, 0, btime_str);
+#else
+   	sb.st_atimespec.tv_sec, sb.st_atimespec.tv_nsec, sb.st_atimespec.tv_sec, atime_str,
+   	sb.st_mtimespec.tv_sec, sb.st_mtimespec.tv_nsec, sb.st_mtimespec.tv_sec, mtime_str,
+   	sb.st_ctimespec.tv_sec, sb.st_ctimespec.tv_nsec, sb.st_ctimespec.tv_sec, ctime_str,
+   	sb.st_birthtimespec.tv_sec, sb.st_birthtimespec.tv_nsec, sb.st_birthtimespec.tv_sec, btime_str);
+#endif
    }
-   rc = fstat(fd, &sb);
-   if (rc) {
-      printf("mystat: cannot stat \"%s\" errno=%d \"%s\"\n", argv[1], errno, strerror(errno));
-      exit(-1);
-   }
-   close(fd);
-
-   // For reference, stat(1) shows ...
-   // st_dev=16777220 st_ino=57980119 st_mode=0100644 st_nlink=1 st_uid=0 st_gid=20 st_rdev=0 st_size=0 st_atime=1449782702 st_mtime=1449782702 st_ctime=1449782702 st_birthtime=1449782702 st_blksize=4096 st_blocks=0 st_flags=0
-
-   ctime_extended(&(sb.st_atimespec), atime_str);
-   ctime_extended(&(sb.st_mtimespec), mtime_str);
-   ctime_extended(&(sb.st_ctimespec), ctime_str);
-   ctime_extended(&(sb.st_birthtimespec), btime_str);
-   printf(" st_dev=%d st_ino=%s st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d st_rdev=%d st_size=%lld st_blksize=%d st_blocks=%llu st_flags=%o\n     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
-	sb.st_dev,
-	onefs_inode_str(sb.st_ino),
-	sb.st_mode,
-	sb.st_nlink,
-	sb.st_uid,
-	sb.st_gid,
-	sb.st_rdev,
-	sb.st_size,
-	sb.st_blksize,
-	sb.st_blocks,
-	sb.st_flags,
-	sb.st_atimespec.tv_sec, sb.st_atimespec.tv_nsec, sb.st_atimespec.tv_sec, atime_str,
-	sb.st_mtimespec.tv_sec, sb.st_mtimespec.tv_nsec, sb.st_mtimespec.tv_sec, mtime_str,
-	sb.st_ctimespec.tv_sec, sb.st_ctimespec.tv_nsec, sb.st_ctimespec.tv_sec, ctime_str,
-	sb.st_birthtimespec.tv_sec, sb.st_birthtimespec.tv_nsec, sb.st_birthtimespec.tv_sec, btime_str);
 }

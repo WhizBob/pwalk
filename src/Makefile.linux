@@ -4,6 +4,7 @@ BINDIR=../bin/linux
 // NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
 PWALK_C=pwalk.c pwalk_acls.c pwalk_report.c pwalk_sums.c
 PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
+PWALK_FLAGS=-lacl -lm -lrt -lpthread -g
 
 all: pwalk xacls hacls chexcmp pwalk_ls_cat
 
@@ -11,7 +12,7 @@ clean:
 	rm -f pwalk xacls hacls chexcmp core.*
 
 pwalk: $(PWALK_C) $(PWALK_H)
-	$(CC) -DLINUX -DTIMESPEC_HACK $(PWALK_C) -o $(BINDIR)/pwalk -lacl -lm -lrt -lpthread
+	$(CC) -DLINUX -DTIMESPEC_HACK $(PWALK_C) -o $(BINDIR)/pwalk $(PWALK_FLAGS)
 
 xacls: xacls.c pwalk_acls.c pwalk_acls.h
 	$(CC) xacls.c pwalk_acls.c -o $(BINDIR)/xacls -lacl
@@ -21,6 +22,9 @@ hacls: hacls.c pwalk_acls.h
 
 chexcmp: chexcmp.c
 	$(CC) chexcmp.c -o $(BINDIR)/chexcmp
+
+mystat: mystat.c
+	$(CC) -D__LINUX__ mystat.c -o $(BINDIR)/mystat
 
 pwalk_ls_cat: pwalk_ls_cat.c
 	$(CC) pwalk_ls_cat.c -o $(BINDIR)/pwalk_ls_cat

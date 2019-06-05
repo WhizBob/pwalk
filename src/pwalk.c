@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.06b2"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.07--"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -110,6 +110,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -156,6 +157,7 @@
 #define PWALK_PLATFORM "Linux"
 #elif defined(__OSX__)
 #define PWALK_PLATFORM "OSX"
+#include <execinfo.h>
 #elif defined(__ONEFS__)
 #define PWALK_PLATFORM "OneFS"
 #else
@@ -187,22 +189,30 @@ void directory_scan(int w_id);
 void abend(char *msg);
 void *worker_thread(void *parg);
 
+// @@@ Worker operational status ...
+typedef enum {EMBRYONIC=0, IDLE, BUSY} wstatus_t;	// Worker status
+
 // @@@ Global variables written *only* by the main controlling thread ...
-typedef enum {BORN=0, IDLE, BUSY} wstate_t;	// Worker state
-static int N_WORKERS = 1;			// <N> from "-dop=<N>"
-static int MAX_OPEN_FILES = 0;			// Calculated to compare with getrlimit(NOFILES)
-static int ABSPATH_MODE = 0;			// True when absolute paths used (FUTURE: eliminate)
-static int Opt_SKIPSNAPS = 1;			// Skip .snapshot[s] dirs unless '+.snapshot' specified
-static int Opt_TSTAT = 0;				// Show timed statistics when +tstat used
-static int Opt_GZ = 0;				// gzip output streams when '-gz' used
-static int Opt_REDACT = 0;			// Redact output (hex inodes instead of names)
-static int Opt_MODE = 1;				// Show mode bits unless -pmode suppresses
-static int P_ACL_P = 0;				// Show ACL as '+'
-static int P_CRC32 = 0;				// Show CRC32 for -ls, -xml
-static int P_MD5 = 0;				// Show MD5 for -ls, -xml
-static int Opt_SELECT = 0;			// True when -select specified to enable [select] criteria
-static int ST_BLOCK_SIZE = 1024;		// Units for statbuf->st_blocks (-bs=512 option to change)
-static char *PYTHON_COMMAND = NULL;		// For OneFS -audit operation
+static int N_WORKERS = 1;		// <N> from "-dop=<N>" defaults to 1
+static int MAX_OPEN_FILES = 0;		// Calculated to compare with getrlimit(NOFILES)
+static int ABSPATH_MODE = 0;		// True when absolute paths used (FUTURE: eliminate)
+static int Opt_SKIPSNAPS = 1;		// Skip .snapshot[s] dirs unless '+.snapshot' specified
+static int Opt_TSTAT = 0;		// Show timed statistics when +tstat used
+static int Opt_GZ = 0;			// gzip output streams when '-gz' used
+static int Opt_REDACT = 0;		// Redact output (hex inodes instead of names)
+static int Opt_MODE = 1;		// Show mode bits unless -pmode suppresses
+static int Opt_SPAN = 0;		// Include dirs that cross filesystems unless '+span'
+static int P_ACL_P = 0;			// Show ACL as '+'
+static int P_CRC32 = 0;			// Show CRC32 for -ls, -xml
+static int P_MD5 = 0;			// Show MD5 for -ls, -xml
+static int ST_BLOCK_SIZE = 1024;	// Units for statbuf->st_blocks (-bs=512 option to change)
+static char *PYTHON_COMMAND = NULL;	// For OneFS -audit operation
+static struct {				// UID and EUID are different when pwalk is setuid root
+   uid_t uid;
+   uid_t euid;
+   gid_t gid;
+   uid_t egid;
+} USER;
 
 // Primary operating modes ...
 static int Cmd_LS = 0;
@@ -239,8 +249,11 @@ static char *WACLS_CMD = NULL;  		// For +wacls= arg
 // For -cmp ...
 #define CMP_BUFFER_SIZE 128*1024		// -cmp buffer sizes
 
-// For -select -since=<file> ...
-static time_t T_SINCE = 0;			// mtime of -since=<file>
+// For -select (klooge: criteria are implictly OR'd for now) ...
+static time_t SELECT_T_SINCE = 0;		// mtime of -since=<file>
+static int SELECT_SINCE = 0;			// -since= specified
+static int SELECT_FAKE = 0;			// -select=fake specified
+static int SELECT_HARDCODED = 0;		// Bare -select specified
 
 // Multipath variables ...
 #define MAXPATHS 64
@@ -289,9 +302,8 @@ typedef struct {				// Only used in WS and GS
 // @@@ Globals foundational to the treewalk logic per se ...
 static FILE *Fpop = NULL, *Fpush = NULL;	// File-based FIFO pointers
 static FILE *Plog = NULL;			// Main logfile output (pwalk.log)
-static count_64 T_START_ns, T_FINISH_ns;	// For Program elapsed time (hi-res)
+static count_64 T_START_hires, T_FINISH_hires;	// For Program elapsed time (hi-res)
 static struct timeval T_START_tv;		// Program start time as timeval ...
-static time_t T_START_s;			// ... and again in seconds.
 
 #define MAXPATHS 64				// Arbitrary limit for [source] or [target] multi-paths
 #define PROGRESS_TIME_INTERVAL 3600/4		// Seconds between progress outputs to log file
@@ -332,30 +344,43 @@ typedef struct {
    count_64 READONLY_DENIST_Bytes;		// READONLY DENIST bytes read
    count_64 NPythonCalls;			// Python calls
    count_64 NPythonErrors;			// Python errors
+   count_64 MAX_inode_Value_Seen;		// Cheap-to-keep (WS, GS) stats
+   count_64 MAX_inode_Value_Selected;
    TALLY_BUCKET_COUNTERS TALLY_BUCKET;		// +tally counters
 } PWALK_STATS_T;
 static PWALK_STATS_T GS;			// 'GS' is 'Global Stats'
 static PWALK_STATS_T *WS[MAX_WORKERS+1];	// 'WS' is 'Worker Stats', calloc'd (per-worker) on worker startup
 
-// LogMsg_mutex for serializing write access to pwalk.log (in LogMsg()) ...
-static pthread_mutex_t LOGMSG_mutex;
-
-// MP_mutex for MP-coherency of worker status and FIFO state ...
-static pthread_mutex_t MP_mutex;
-count_64 N_Worker_Wakeups;
-
-// FIFO_mutex for access to the FIFO file ...
-static pthread_mutex_t FIFO_mutex;
+// MP mutex for MP-coherency of worker status and FIFO state ...
+static pthread_mutex_t	MP_mutex;
+#define MP_LOCK(msg) { if (pthread_mutex_lock(&MP_mutex)) abend(msg); }			// MP lock macro
+#define MP_UNLOCK { if (pthread_mutex_unlock(&MP_mutex)) abend("unlock(MP_mutex)"); }	// MP unlock macro
+unsigned Workers_BUSY = 0;			// Also WDAT.status uses this mutex
 count_64 FIFO_PUSHES = 0;			// # pushes (increments in fifo_push())
 count_64 FIFO_POPS = 0;				// # pops (increments in fifo_pop())
+count_64 FIFO_DEPTH = 0;			// # FIFO_PUSHES - FIFO_POPS
 
-// WorkerData is array of structures that contain worker-indexed private DATA ...
+// LOGMSG mutex for serializaing access to pwalk.log (in LogMsg()) ...
+static pthread_mutex_t	LOGMSG_mutex;
+
+// MANAGER CV & mutex for MANAGER wakeup logic ...
+static pthread_cond_t	MANAGER_cond;
+static pthread_mutex_t	MANAGER_mutex;
+
+// WORKER CVs & mutexes for WORKER wakeup logic ...
+static pthread_cond_t	WORKER_cond[MAX_WORKERS];
+static pthread_mutex_t	WORKER_mutex[MAX_WORKERS];
+
+// pThreads ...
+pthread_t		WORKER_pthread[MAX_WORKERS];
+
+// @@@ WorkerData is array of structures that contains most worker-indexed private DATA ...
 static struct {				// Thread-specific data (WorkerData[i]) ...
    // Worker-related ...
    int			w_id;			// Worker's unique index
+   wstatus_t		status; 		// Worker status
    FILE			*wlog;			// WLOG output file for this worker
    FILE			*werr;			// WERR output file for this worker
-   wstate_t		wstate;			// Worker's operational state
    // Co-process & xacls support ...
    FILE 		*PYTHON_PIPE;		// Pipe for -audit Python symbiont
    FILE 		*WACLS_PIPE;		// Pipe for +wacls= process
@@ -364,14 +389,10 @@ static struct {				// Thread-specific data (WorkerData[i]) ...
    FILE 		*XACLS_NFS_FILE;	// File for +xacls=nfs output
    FILE 		*XACLS_ONEFS_FILE;	// File for +xacls=onefs output
    // Pointers to runtime-allocated buffers ...
-   char			*DirPath;	// Fully-qualified directory to process
-   struct dirent	*Dirent;	// Buffer for readdir_r()
-   void			*SOURCE_BUF_P;	// For -cmp source
-   void			*TARGET_BUF_P;	// For -cmp source
-   // pThread-related ...
-   pthread_t		thread;
-   pthread_cond_t	WORKER_cv;	// Condition variable for worker wakeup logic
-   pthread_mutex_t	WORKER_cv_mutex;
+   char			*DirPath;		// Fully-qualified directory to process
+   struct dirent	*Dirent;		// Buffer for readdir_r()
+   void			*SOURCE_BUF_P;		// For -cmp source
+   void			*TARGET_BUF_P;		// For -cmp source
 } WorkerData[MAX_WORKERS+1];			// klooge: s/b dynamically-allocated f(N_WORKERS) */
 
 // Convenience MACROs for worker's thread-specific values ...
@@ -381,6 +402,23 @@ static struct {				// Thread-specific data (WorkerData[i]) ...
 #define WLOG WDAT.wlog			// Coding convenience for w_id's output FILE*
 // Per-worker .err files get created only when needed ...
 #define WERR (WDAT.werr ? WDAT.werr : worker_err_create(w_id))	// Coding convenience for w_id's error FILE*
+
+void
+dump_thread(char *name, pthread_mutex_t *mutex)
+{
+   void *ptr;
+
+   ptr = mutex;
+   fprintf(stderr, "= %s\n", name);
+   fprintf(stderr, "%llx\n", (count_64) ptr);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 1);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 2);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 3);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 4);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 5);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 6);
+   fprintf(stderr, "%llx\n", (count_64) ptr + 7);
+}
 
 // @@@ SECTION: Portable hi-resolution timing support  @@@
 
@@ -492,19 +530,58 @@ usage(void)
    printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp!\n");
    printf("	-bs=512			// interpret st_block_size units as 512 bytes rather than 1024\n");
    printf("	-redact			// output hex inode #'s instead of names\n");
-   printf("	-select			// DEVELOPMENTAL: apply selected() logic\n");
+   printf("	-select[=<keyword>]	// DEVELOPMENTAL: apply selected() logic\n");
    printf("	-since=<file>		// DEVELOPMENTAL: -select files having mtime or ctime > mtime(<file>)\n");
-   printf("	-gz			// gzip output files (HANGS on OSX!!)\n");
+   printf("	-gz			// gzip primary output files\n");
    printf("	-dryrun			// suppress making any changes (with -fix_times & -rm)\n");
    printf("	-pmode			// suppress showing formatted mode bits (with -ls and -xml)\n");
    printf("	+acls			// show ACL info in some outputs, eg: '+' with -ls\n");
    printf("	+crc			// show CRC for each file (READS ALL FILES!)\n");
    printf("	+md5  (COMING SOON!)	// show MD5 for each file (READS ALL FILES!)\n");
-   printf("	+tstat			// include hi-res timing statistics in some outputs\n");
+   printf("	+tstat			// show hi-res timing statistics in some outputs\n");
+   printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
+   printf("	+span			// include directories that span filesystems (OFF by default)\n");
    printf("	-v			// verbose; verbosity increased by each 'v'\n");
    printf("	-d			// debug; verbosity increased by each 'd'\n");
-   printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    exit(-1);
+}
+
+// @@@ SECTION: Worker management helpers @@@
+
+// poke_manager() - Wakeup manager loop.
+
+void
+poke_manager(char *tag)
+{
+   if (PWdebug) fprintf(stderr, "= poke_manager: %s\n", tag);
+   assert(pthread_cond_signal(&MANAGER_cond) == 0);
+}
+
+// worker_status() - Return read-consistent worker and FIFO accounting ...
+
+// NOTE: Once worker threads are running, the number IDLE plus the number BUSY will
+// sum to N_WORKERS -- but until they are running, they will sum to something less,
+// because some threads will still have the status of being EMBRYONIC.
+
+void
+worker_status(unsigned *nw_idle, unsigned *nw_busy, count_64 *fifo_depth)
+{
+   int w_id;
+   unsigned idle = 0, busy = 0;
+   count_64 depth;
+
+   MP_LOCK("MP lock in worker_status()");				// +++ MP lock +++
+   for (w_id=0; w_id < N_WORKERS; w_id++) {
+      if (WDAT.status == IDLE) idle++;
+      if (WDAT.status == BUSY) busy++;
+   }
+   assert(busy == Workers_BUSY);	// sanity check
+   depth = FIFO_DEPTH;
+   MP_UNLOCK;								// --- MP lock ---
+
+   if (nw_idle) *nw_idle = idle;
+   if (nw_busy) *nw_busy = busy;
+   if (fifo_depth) *fifo_depth = depth;
 }
 
 // LogMsg() - write to main output log stream (Plog); serialized by mutex, with a timestamp
@@ -524,7 +601,8 @@ LogMsg(char *msg, int force_flush)
    int show_timestamp = FALSE, show_progress = FALSE;
    char timestamp[32];		// ctime() only needs 26 bytes
    char ebuf[64];		// for elapsed time
-   count_64 pushes, pops;	// for progress report
+   count_64 fifo_depth;		// for progress report
+   unsigned nw_busy;
 
    assert (Plog != 0);		// Fail fast if Plog is not initialized!
    time_now = time(NULL);	// Determine current time ...
@@ -553,17 +631,9 @@ LogMsg(char *msg, int force_flush)
 
    // Output: [progress] ...
    if (show_progress) {
-      // Read-consistent FIFO counters ...
-      if (pthread_mutex_lock(&FIFO_mutex))				// +++ FIFO lock +++
-         abend("FATAL: Can't get FIFO lock in fifo_push()!\n");
-      pushes = FIFO_PUSHES;
-      pops = FIFO_POPS;
-      pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
-      // Progress update of control thread ...
-      fprintf(Plog, "PROGRESS: ELAPSED %s, FIFO pushes=%llu, pops=%llu, depth=%llu\n",
-         format_ns_delta_t(ebuf, T_START_ns, gethrtime()),
-         pushes, pops, pushes-pops);
-      // klooge: TODO add per-client progress outputs, perhaps locklessly?
+      worker_status(NULL, &nw_busy, &fifo_depth);
+      fprintf(Plog, "PROGRESS: ELAPSED %s, %u workers BUSY, FIFO depth=%llu\n",
+         format_ns_delta_t(ebuf, T_START_hires, gethrtime()), nw_busy, fifo_depth);
    }
 
    // Output: [msg] ...
@@ -576,24 +646,34 @@ LogMsg(char *msg, int force_flush)
 }
 
 // close_all_outputs() - Shutdown Python and +wacls pipes, and close +xacls= files ...
-// NOTE: WDAT is a macro for WorkerData[w_id]
 
 void
 close_all_outputs(void)
 {
    char pw_acls_emsg[128] = "";
    int pw_acls_errno = 0;
-   int w_id;
+   int w_id, rc;
 
+   // Output trailer[s] ...
+   if (Cmd_XML)
+      for (w_id=0; w_id<N_WORKERS; w_id++)
+         fprintf(WLOG, "\n</xml-listing>\n");
+
+   // Close per-worker outputs ...
    for (w_id=0; w_id<N_WORKERS; w_id++) {
       // Close per-worker primary output WLOG file (iff open) ...
-      if (WDAT.wlog) {
-         if (Cmd_XML)			// Output trailer[s] ...
-            fprintf(WLOG, "\n</xml-listing>\n");
-         if (Opt_GZ)			// Close log stream ...
-            pclose(WLOG);
-         else
+      if (WLOG) {
+         if (Opt_GZ) {			// Close log stream ...
+#if defined(__OSX__)			// OSX pclose() hangs for unwritten streams!
+            fflush(WLOG);		// pwalk exit will tidy up the gzips
             fclose(WLOG);
+#else
+            if ((rc = pclose(WDAT.wlog)))
+               fprintf(stderr, "pclose(WLOG) w_id=%d rc=%d\n", w_id, rc);
+#endif
+         } else {
+            fclose(WLOG);
+         }
       }
 
       // Close per-worker error output WERR file (iff open) ...
@@ -631,14 +711,23 @@ close_all_outputs(void)
 
 // abend() - Rude, abrupt exit.
 
+// THIS ws not as useful as I had hoped ...
+//	   void* callstack[512];
+//	#if defined(__OSX__)
+//	   backtrace_symbols_fd(callstack, 512, fileno(stderr));
+//	#endif
+// OSX: ulimit -c unlimited // dumps to /core
+
 void
 abend(char *msg)
 {
+
    fprintf(stderr, "%d: FATAL: %s\n", getpid(), msg);
    LogMsg(msg, 1);
-   perror("");
-   close_all_outputs();
-   exit(-1);
+   //perror("");
+   //close_all_outputs();
+   kill(getpid(), SIGQUIT);	// dump core
+   assert(0);
 }
 
 // yield_cpu() - Wrapper around platform-dependent CPU yield.
@@ -753,6 +842,18 @@ pwalk_format_time_t(const time_t *date_p, char *output, const int output_size, c
 
 // @@@ SECTION: Worker files open & close @@@
 
+// fix_owner() - In case we are running setuid or setgid, change ownership of output
+// streams to that of the program invoker ... so they can, y'know, delete them.
+
+void
+fix_owner(FILE *file)
+{
+
+   if (file == NULL) return;
+   if ((USER.uid == USER.euid) && (USER.gid == USER.egid)) return;
+   fchown(fileno(file), USER.uid, USER.gid);
+}
+
 // worker_aux_create() - creates per-worker auxillary output files.
 // Passed-in ftype is filename suffix, eg: ".bin"
 
@@ -768,6 +869,7 @@ worker_aux_create(int w_id, FILE **pFILE, char *ftype)
       sprintf(emsg, "Cannot create worker %d's \"%s\" output file!\n", w_id, ftype);
       abend(emsg);
    }
+   fix_owner(*pFILE);
    // Give output stream a decent buffer size ...
    setvbuf(*pFILE, NULL, _IOFBF, WORKER_OBUF_SIZE);		// Fully-buffered
 }
@@ -783,9 +885,10 @@ worker_err_create(int w_id)
    sprintf(strbuf, "%s%cworker-%03d.err", OUTPUT_DIR, PATHSEPCHR, w_id);
    WDAT.werr = fopen(strbuf, "wx");			// O_EXCL create
    if (WDAT.werr == NULL)
-      abend("Cannot create worker's .err file!\n");
+      abend("Cannot create worker's .err file!");
+   fix_owner(WDAT.werr);
    setvbuf(WDAT.werr, NULL, _IOLBF, 0);			// Line-buffered
-   sprintf(strbuf, "NOTICE: Worker created %s%cworker-%03d.err\n", OUTPUT_DIR, PATHSEPCHR, w_id);
+   sprintf(strbuf, "@ Worker %d created %s%cworker-%03d.err\n", w_id, OUTPUT_DIR, PATHSEPCHR, w_id);
    LogMsg(strbuf, 1);
 
    return(WDAT.werr);
@@ -822,7 +925,8 @@ worker_log_create(int w_id)
       WLOG = fopen(ofile, "wx");				// O_EXCL create
    }
    if (WLOG == NULL)
-      abend("Cannot create worker's output file!\n");
+      abend("Cannot create worker's output file!");
+   fix_owner(WLOG);
 
    // Give each output stream a decent buffer size ...
    setvbuf(WLOG, NULL, _IOFBF, WORKER_OBUF_SIZE);		// Fully-buffered
@@ -849,25 +953,44 @@ worker_log_create(int w_id)
 void
 init_main_mutexes(void)
 {
+   int i, rc, w_id;
    pthread_mutexattr_t mattr;
 
-   // Start with default mutex characteristics ...
-   pthread_mutexattr_init(&mattr);
-   // ... add: return -1 rather than deadlock if same thread does extra lock tries ...
-   pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_ERRORCHECK);
+   // PTHREAD_MUTEX_NORMAL, PTHREAD_MUTEX_RECURSIVE, PTHREAD_MUTEX_ERRORCHECK, PTHREAD_MUTEX_DEFAULT
+
+   // Mutexes have attribute of returning -1 rather than deadlockiing if a thread does extra lock tries ...
+   assert(pthread_mutexattr_init(&mattr) == 0);
+   assert(pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_ERRORCHECK) == 0);
+//   assert(pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED) == 0);
+#if defined(__OSX__)
+   assert(pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT) == 0);	// === OSX
+#endif
+
+   if (PWdebug) fprintf(stderr, "sizeof(pthread_mutex_t) = %lu\n", sizeof(pthread_mutex_t));
+   if (PWdebug) fprintf(stderr, "sizeof(pthread_cond_t) = %lu\n", sizeof(pthread_cond_t));
 
    // ------------------------------------------------------------------------
 
    // MP mutex for MP-coherent global data access ...
-   if (pthread_mutex_init(&MP_mutex, &mattr)) abend("FATAL: Can't init MP mutex!\n");
+   if (pthread_mutex_init(&MP_mutex, &mattr)) abend("Can't init MP mutex!");
 
    // LOGMSG mutex for serializing logfile messages ...
-   if (pthread_mutex_init(&LOGMSG_mutex, &mattr)) abend("FATAL: Can't init LOGMSG mutex!\n");
+   if (pthread_mutex_init(&LOGMSG_mutex, &mattr)) abend("Can't init LOGMSG mutex!");
 
-   // FIFO mutex for serializing FIFO access ...
-   if (pthread_mutex_init(&FIFO_mutex, &mattr)) abend("FATAL: Can't init FIFO mutex!\n");
+   // MANAGER CV for keeping workers BUSY ...
+   if (pthread_cond_init(&MANAGER_cond, NULL)) abend("Can't init MANAGER cv!");
+   if (pthread_mutex_init(&MANAGER_mutex, &mattr)) abend("Can't init MANAGER cv mutex!");
 
-   // ------------------------------------------------------------------------
+   // Initialize WORKERs' condition variables and associated mutexes ...
+   for (w_id=0; w_id < N_WORKERS; w_id++) {
+      assert(pthread_mutex_init(&(WORKER_mutex[w_id]), &mattr) == 0);
+      assert(pthread_cond_init(&(WORKER_cond[w_id]), NULL) == 0);
+   }
+
+   // Our main thread holds the MANAGER_mutex at all times past here except during our condition
+   // wait in manager_workers().  We must hold this lock before any worker thread tries to set
+   // the associated MANAGER_cv.
+   assert(pthread_mutex_lock(&MANAGER_mutex) == 0);	// +++ MANAGER cv lock +++
 
    // Cleanup ...
    pthread_mutexattr_destroy(&mattr);
@@ -897,28 +1020,35 @@ init_main_outputs(void)
       rc = mkdir(OUTPUT_DIR, 0777);
       if (rc == 0) break;			// Success!
       if (errno != EEXIST)			// Only retry on EEXIST errors ...
-         abend("Cannot create output directory!\n");
+         abend("Cannot create output directory!");
       if (try == (MAX_MKDIR_RETRIES-1))		// ... but do not retry forever.
-         abend("Cannot create output directory after MAX_MKDIR_RETRIES attempts!\n");
+         abend("Cannot create output directory after MAX_MKDIR_RETRIES attempts!");
       sleep(1);					// 1 second wait between retries
    }
    assert (rc == 0);
+   // fix_owner() equivalent for output directory ...
+   lchown(OUTPUT_DIR, USER.uid, USER.gid);
 
    // Create ${OUTPUT_DIR}/${PROGNAME}.log as our primary (shared, buffered) output log ...
    sprintf(ofile, "%s%c%s.log", OUTPUT_DIR, PATHSEPCHR, PROGNAME);
    fclose(Plog);
    Plog = fopen(ofile, "w");
    if (Plog == NULL) abend("Cannot open Plog!");
+   fix_owner(Plog);
+
+   // Fully buffer the shared log (though LogMsg will flush it as needed while holding a lock) ...
    setvbuf(Plog, NULL, _IOFBF, 8192);
 
    // Start being chatty (we should use LogMsg() henceforth) ...
-   sprintf(msg, "NOTICE: %s Begins\n", PWALK_VERSION);
+   sprintf(msg, "NOTICE: +++ %s Begins +++\n", PWALK_VERSION);
    LogMsg(msg, 1);
 
    // Create ${OUTPUT_DIR}/${PROGNAME}.fifo as file-based FIFO, with distinct push and pop streams ...
    sprintf(ofile, "%s%c%s.fifo", OUTPUT_DIR, PATHSEPCHR, PROGNAME);
    Fpush = fopen(ofile, "w");
    if (Fpush == NULL) abend("Cannot create Fpush!");
+   fix_owner(Fpush);
+
    // Make our FIFO writes line-buffered ...
    setvbuf(Fpush, NULL, _IOLBF, 2048);
    Fpop = fopen(ofile, "r");
@@ -928,31 +1058,33 @@ init_main_outputs(void)
 // init_worker_pool() - 3rd initialization; all worker-pool and WorkerData inits here ...
 
 // NOTE: Even though variable accesses are uncontended here, they are wrapped by their
-// respective mutexes to assure they are flushed to globally-coherent memory.
+// respective mutexes in case that helps flush them to globally-coherent memory.
 // NOTE: Only outputs here are via abend(), because Plog may not yet be initialized.
 
 void
 init_worker_pool(void)
 {
    int w_id;
-   pthread_mutexattr_t mattr;
-   pthread_condattr_t cattr;
+   unsigned nw_idle, nw_busy;
 
-   // Start with default mutex characteristics ...
-   pthread_mutexattr_init(&mattr);
-   // ... add: return -1 rather than deadlock if same thread does extra lock tries ...
-   pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_ERRORCHECK);
+   pthread_attr_t pthread_attr;
+   size_t stacksize;
 
-   // Take default condition variable characteristics ...
-   pthread_condattr_init(&cattr);
-
-   // ------------------------------------------------------------------------
+   // Per-thread stacksize setting ...
+   // ... foundational to future worker stack depth checks ...
+   // assert(pthread_attr_getstacksize(&pthread_attr, &stacksize) == 0);
+   // fprintf(stderr, "+ stacksize=%lu\n", stacksize);
+   assert(pthread_attr_init(&pthread_attr) == 0);
+   stacksize = 800*1024;
+   assert(pthread_attr_setstacksize(&pthread_attr, stacksize) == 0);
 
    // Initialize each worker's thread-specific data and start their pThreads ...
    bzero(&WorkerData, sizeof(WorkerData));				// Start with all zeroes
+
    for (w_id=0; w_id<N_WORKERS; w_id++) {
       WDAT.w_id = w_id;
       WDAT.werr = NULL;
+      WDAT.status = EMBRYONIC;
       WDAT.PYTHON_PIPE = NULL;						// Explicit but redundant ...
       WDAT.WACLS_PIPE = NULL;
       WDAT.XACLS_BIN_FILE = NULL;
@@ -969,23 +1101,19 @@ init_worker_pool(void)
       // Worker's statistics ...
       WS[w_id] = calloc(1, sizeof(PWALK_STATS_T));			// Worker statistics
 
-      // Worker's wakeup mechanism ...
-      if (pthread_cond_init(&(WDAT.WORKER_cv), &cattr))		// Condition Variable
-         abend("FATAL: Can't init WORKER cv!\n");
-      if (pthread_mutex_init(&(WDAT.WORKER_cv_mutex), &mattr))	// Associated Mutex
-         abend("FATAL: Can't init WORKER cv mutex!\n");
-
       // Start the worker's pThread ...
-      if (pthread_create(&(WDAT.thread), NULL, worker_thread, &(WDAT.w_id)))
-         abend("FATAL: Can't start pthread!\n");
-      WDAT.wstate = BORN;					// Successfully born worker
+      assert(pthread_create(&(WORKER_pthread[w_id]), &pthread_attr, worker_thread, &(WDAT.w_id)) == 0);
+      yield_cpu();		// Give new thread a running start
    }
+   LogMsg("@ All workers STARTED\n", 1);
 
-   // ------------------------------------------------------------------------
-
-   // Cleanup ...
-   pthread_mutexattr_destroy(&mattr);
-   pthread_condattr_destroy(&cattr);
+   // Wait for all workers to get out of their initial EMBRYONIC status ...
+   while (1) {
+      worker_status(&nw_idle, &nw_busy, NULL);			// +/- MP lock +/-
+      if ((nw_idle + nw_busy) == N_WORKERS) break;		// All spun-up ...
+      yield_cpu();						// give things more chance to change
+   }
+   LogMsg("@ All workers READY\n", 1);
 }
 
 // @@@ SECTION: Misc helper functions @@@
@@ -1039,10 +1167,7 @@ str_dump(char *str, char *dump)
 }
 
 // skip_this_directory() - TRUE iff passed directory path should be skipped (ignored).
-// By default, skips these directories;
-//	.snapshot[s] - unless +snapshot was specified
-//	.isi-compliance - OneFS SmartLock Compliance-mode -audit mode.
-//	.ifsvar - OneFS internal file space
+
 // klooge: IMPLEMENT [include_dir] and [exclude_dir] sections in parameter file to override or augment.
 // NOTE: ONLY to be called from fifo_push(), so ONLY directory paths are passed-in!
 
@@ -1052,7 +1177,10 @@ skip_this_directory(char *dirpath, struct stat *sb, int w_id)
    char *fname_p;
    char *skip = NULL;
 
-   // @@@ Name-based skips ...
+   // @@@ Name-based skips ... by default, skip these directories ...
+   //	.snapshot[s] - unless +snapshot was specified
+   //	.isi-compliance - OneFS SmartLock Compliance-mode -audit mode.
+   //	.ifsvar - OneFS internal file space
 
    // Isolate filename ...
    fname_p = rindex(dirpath, PATHSEPCHR);
@@ -1074,10 +1202,11 @@ skip_this_directory(char *dirpath, struct stat *sb, int w_id)
 
    // @@@ Quality-based skips ...
 
+   // NOTE: +span enforcement is not here because it requires knowledge of the
+   // parent directory which is not visible in this context.
+
    // FUTURE: Under OSX, some /dev/fd/<n> files will appear to be directories,
    // but they cannot be opened by opendir() and will generate an error.
-
-   // FUTURE: If -xdev is specified, do not push directories with DEVID different from SOURCE ...
 
 out:
    if (skip) {
@@ -1381,7 +1510,7 @@ parse_pfile(char *parfile)
    return;
 
 error:
-   fprintf(stderr, "ERROR: -args= : ");
+   fprintf(stderr, "ERROR: -pfile= : ");
    fprintf(stderr, errstr, line);
    exit(-1);
 }
@@ -2016,28 +2145,42 @@ pwalk_tally_output()
 
 // selected() is a TEMPORARY placeholder for file-selection logic. Files and directories which return
 // FALSE will not be output.
+//
+// NOTE: st_birthtime will NOT be accurate on NFS client! It will probably be a copy of ctime! So, avoid
+// trying to select on it unless native to OneFS.
 
 int
 selected(char *filename, struct stat *sb)
 {
-   // Blacklist / exclude ...
-   // if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
+   if (SELECT_HARDCODED) {
+      // Blacklist / exclude ...
+      // if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
+   
+      // Whitelist / includes ..
+      // if (!S_ISREG(sb->st_mode)) return (1);		// Include all non-ordinary files
+      // if (strstr(filename, "|")) return (1);		// Include names with '|'
+      // if (sb->st_uid == 0) return (1);		// Include only root-owned files
+   
+      // regexp() example ...
+   }
 
-   // Whitelist / includes ..
-   // if (!S_ISREG(sb->st_mode)) return (1);		// Include all non-ordinary files
-   // if (strstr(filename, "|")) return (1);		// Include names with '|'
-   // if (sb->st_uid == 0) return (1);			// Include only root-owned files
+   // Include only files changed (ctime or mtime) since mtime of -since=<file> ...
+   if (SELECT_SINCE) {
+       if ((sb->st_ctimespec.tv_sec > SELECT_T_SINCE) || (sb->st_mtimespec.tv_sec > SELECT_T_SINCE))
+          return (1);
+   }
 
-   // regexp() example ...
-
-   // Include only files changed since mtime of -since=<file> ...
-   // NOTE: st_birthtime will NOT be accurate on NFS client! It will probably be a copy of ctime!
-   if ((sb->st_ctimespec.tv_sec > T_SINCE) ||
-       (sb->st_mtimespec.tv_sec > T_SINCE)) return (1);
+#if defined(__ONEFS__)
+   if (SELECT_FAKE) {
+   }
+#endif
 
    // Default is to exclude ...
    return (0);
 }
+
+// @@@ SECTION: ascii_fy & de_ascii_fy @@@
+// klooge: FUTURE
 
 // @@@ SECTION: FIFO management @@@
 
@@ -2053,21 +2196,47 @@ fifo_push(char *pathname, struct stat *sb, int w_id)
 {
    char ascii_path[8192];
    char *pi, *po;
+   int nw_busy;
 
-   // ASCII-fy: Since passed-in pathname might be in a non-ASCII character set, so we make an
-   // 'ASCII-fied' copy to push to the FIFO -- which must have newline-delimited pathnames.
-   // fifo_pop() will (must) reverse this tranformation!
+   // ASCII-fy: Pathnames might be in a non-ASCII character set, so for file and pathnames
+   // that must be externally represented (in pwalk.fifo or other pwalk outputs), we make
+   // an 'ASCII-fied' copy. Readers of these values, such as fifo_pop(), must reverse this
+   // transformation.
+   //
+   // We use the byte translations marked as YES in this table, which should show what 'ls -lbd' would show;
+   // 
+   // YES	\a 		07 	Alert (Beep, Bell) (added in C89)[1]
+   // YES	\b 		08 	Backspace
+   // YES	\t 		09 	Horizontal Tab
+   // YES	\n 		0A 	Newline (Line Feed); see notes below
+   // YES	\v 		0B 	Vertical Tab
+   // YES	\f 		0C 	Formfeed
+   // YES	\r 		0D 	Carriage Return
+   // YES	\" 		22 	Double quotation mark
+   // YES	\' 		27 	Single quotation mark
+   // YES	\? 		3F      Question mark
+   // YES	\\ 		5C 	Backslash
+   // YES	\xhh 		any 	The byte whose numerical value is given by hh… interpreted as a hexadecimal number
+   // NO	\e 		1B 	Escape character
+   // NO	\nnn 		any 	The byte whose numerical value is given by nnn interpreted as an octal number
+   // NO	\Uhhhhhhhh 	none 	Unicode code point where h is a hexadecimal digit
+   // NO	\uhhhh 		none 	Unicode code point below 10000 hexadecimal
+   //
+   // NOTE: (Table derived from: https://en.wikipedia.org/wiki/Escape_sequences_in_C)
+   // 
    for (pi=pathname, po=ascii_path; *pi; pi++) {
-      if (*pi == '\\') {
-         *po++ = '\\';
-         *po++ = '\\';
-      } else if (isgraph(*pi)) {
+      if (isgraph(*pi)) {
+         if (*pi == '\'' || *pi == '"' || *pi == '?' || *pi == '\\') *po++ = '\\';
          *po++ = *pi;
       } else {
          *po++ = '\\';
-         *po++ = 'x';
-         *po++ = "0123456789abcdef"[(*pi & 0xf0) >> 4];
-         *po++ = "0123456789abcdef"[(*pi & 0xf)];
+         if (*pi >= '\a' && *pi <= '\r') {
+            *po++ = "abtnvfr"[*pi - '\a'];
+         } else {
+            *po++ = 'x';
+            *po++ = "0123456789abcdef"[(*pi & 0xf0) >> 4];
+            *po++ = "0123456789abcdef"[(*pi & 0xf)];
+         }
       }
       assert (po < ascii_path+8100);
    }
@@ -2077,15 +2246,14 @@ fifo_push(char *pathname, struct stat *sb, int w_id)
    if (skip_this_directory(pathname, sb, w_id))
       return;
 
-   assert (Fpush != NULL);
-   if (pthread_mutex_lock(&FIFO_mutex))				// +++ FIFO lock +++
-      abend("FATAL: Can't get FIFO lock in fifo_push()!\n");
+   // Here's the PUSH and associated coherent accounting ...
+   MP_LOCK("fifo_push()");					// +++ MP lock +++
    fprintf(Fpush, "%s\n", ascii_path);				// push ascii_path
    FIFO_PUSHES += 1;
-   pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
+   FIFO_DEPTH += 1;
+   if (Workers_BUSY < N_WORKERS) poke_manager("fifo_push()");
+   MP_UNLOCK;							// --- MP lock ---
 }
-
-// fifo_pop() - Pop FIFO into passed pathname, returning pre-pop FIFO depth.
 
 // Always returns current (pre-pop) depth of the FIFO (ie: 0 -> FIFO is empty).
 // If passed pathname is NULL, do not actually pop the FIFO; just determine its depth.
@@ -2100,43 +2268,65 @@ hex_cval(char ch)
    else assert("hex_cval() badarg!"==NULL);
 }
 
+// fifo_pop() - Pop FIFO into passed pathname, returning pre-pop FIFO depth.
+
 int
 fifo_pop(char *pathname)
 {
    char *pi, *po;;
    char ch;
-   int fifo_depth, rc;
+   int rc;
+   count_64 fifo_depth;
    char ascii_path[8192];
 
    assert(Fpop != NULL);	// File handle for FIFO pops
 
-   if (pthread_mutex_lock(&FIFO_mutex))				// +++ FIFO lock +++
-      abend("FATAL: Can't get FIFO lock in fifo_pop()!\n");
-   fifo_depth = FIFO_PUSHES - FIFO_POPS;
+   MP_LOCK("fifo_pop()");						// +++ MP lock +++
+   fifo_depth = FIFO_DEPTH;
    if (fifo_depth == 0 || pathname == NULL) {
-      pthread_mutex_unlock(&FIFO_mutex);			// --- FIFO lock ---
+      MP_UNLOCK;							// --- MP lock ---
       return(fifo_depth);
+   } else { // Still holding MP lock ...
+      pathname[0] = '\0';
+      if (fgets(ascii_path, sizeof(ascii_path)-1, Fpop) == NULL)	// pop ascii_path (or die!)
+         abend("fifo_pop() read failure!");
+      FIFO_POPS += 1;
+      FIFO_DEPTH -= 1;
+      MP_UNLOCK;							// --- MP lock ---
    }
-   // Still holding FIFO lock ...
-   pathname[0] = '\0';
-   if (fgets(ascii_path, sizeof(ascii_path)-1, Fpop) == NULL)	// pop ascii_path (or die!)
-      abend("FATAL: fifo_pop() read failure!\n");
-   FIFO_POPS += 1;
-   pthread_mutex_unlock(&FIFO_mutex);				// --- FIFO lock ---
 
    // De-ASCII-fy: Copy ascii_path to outpt pathname, de-ASCII-fying as we go ...
-   // FUTURE: This logic assumes PATHSEPCHR is '/', not '\'! (klooge)
+   // FUTURE: This logic assumes PATHSEPCHR is '/', not '\\'! (klooge)
    // FUTURE: functionally encapsulate ASCII-fy and de-ASCII-fy operations
+   // YES	\a 		07 	Alert (Beep, Bell) (added in C89)[1]
+   // YES	\b 		08 	Backspace
+   // YES	\t 		09 	Horizontal Tab
+   // YES	\n 		0A 	Newline (Line Feed); see notes below
+   // YES	\v 		0B 	Vertical Tab
+   // YES	\f 		0C 	Formfeed
+   // YES	\r 		0D 	Carriage Return
+   // YES	\" 		22 	Double quotation mark
+   // YES	\' 		27 	Single quotation mark
+   // YES	\? 		3F      Question mark
+   // YES	\\ 		5C 	Backslash
+   // YES	\xhh 		any 	The byte whose numerical value is given by hh… interpreted as a hexadecimal number
    for (pi=ascii_path, po=pathname; *pi; ) {
-      if (*pi == '\\') {
-         if (*(pi+1) == 'x') {		// NEXT 2 are hex digits or die!
+      if (pi[0] == '\\') {				// Escape ...
+         if (pi[1] == 'x') {				// NEXT 2 are hex digits -- or DIE!
             *po++ = (hex_cval(pi[2]) << 4) | (hex_cval(pi[3]));
             pi += 4;
-         } else {			// NEXT 1 literally ...
-            *po++ = *(pi+1);
+         } else {
+            if      (pi[1] == 'a') *po++ = 0x07;	// ANSI special character exceptions ...
+            else if (pi[1] == 'b') *po++ = 0x08;
+            else if (pi[1] == 't') *po++ = 0x09;
+            else if (pi[1] == 'n') *po++ = 0x0A;
+            else if (pi[1] == 'v') *po++ = 0x0B;
+            else if (pi[1] == 'f') *po++ = 0x0C;
+            else if (pi[1] == 'r') *po++ = 0x0D;
+            else                   *po++ = pi[1];	// <whatever>, raw
             pi += 2;
          }
-      } else {				// this 1 literally ...
+      } else {						// Plain, non-escape ...
          *po++ = *pi++;
       }
       assert (po < (pathname+MAX_PATHLEN-1));
@@ -2153,62 +2343,117 @@ fifo_pop(char *pathname)
 
 // worker_thread() - Worker pThread ...
 
-// Up to N_WORKERS of these may be running concurrently. This is the outer control loop
-// for a worker, which ultimately calls a single 'payload' function when the worker is
-// awoken; in this case, directory_scan(). Each worker remains BUSY as long as it can
-// pop more work for directory_scan() from the FIFO. When a worker runs out of work, it
-// transitions from BUSY an IDLE, but might be re-awakened by manage_workers(). Each of
-// these workers remains active until shut down from main().
+// N_WORKERS of these worker_thread() functions will always be running concurrently,
+// until program termination criteria is determined in manage_workers(), and the threads
+// are shut down from main().
+//
+// State transition model;
+//	- When first started, a worker's status (wstatus) is EMBRYONIC; the thread-starter
+//		waits until all workers have escaped that status before manager_workers()
+//		("the manager") is called.
+//	- At the top of the loop, workers transition to BUSY, and remain BUSY for as long
+//		as they can pop more work from the FIFO.
+//	- When a worker runs out of work, it transitions itself from BUSY to IDLE and waits
+//		to be re-awakened by the manager.
+// IDLE/BUSY accounting is crucial to pwalk's exit criteria of ("FIFO empty and all workers
+// are IDLE").
 
 void *
 worker_thread(void *parg)
 {
-   int w_id = *((int *) parg); // Unique our thread & passed on to subordinate functions
+   int w_id = *((int *) parg);	// Unique to our thread & passed on to subordinate functions
    sigset_t sigmask;
-   unsigned long wakeups;
-   char msg[256];
+   count_64 w_fifo_pops = 0, w_fifo_pops_0;
+   unsigned w_wakeups = 0;
+   char msg[256], *dp;		// *dp - dynamic; should be freed, but only used to abend!
+   int rc, status_change;
+   pthread_mutexattr_t mattr;	// klooge: TINY one-time memory leak
 
-   // Disable all signals in our thread ...
-   sigemptyset(&sigmask);
-   if (pthread_sigmask(SIG_SETMASK, &sigmask, NULL))
-      abend("WARNING: Can't block signals!\n");
+   if (PWdebug) fprintf(stderr, "= Worker %d -> START ...\n", w_id);
+
+   // Disable *most* signals in our thread ...
+//   sigemptyset(&sigmask);
+//   sigaddset(&sigmask, SIGBUS);
+//   sigaddset(&sigmask, SIGSEGV);
+//   assert(pthread_sigmask(SIG_SETMASK, &sigmask, NULL) == 0);
 
    // We hold our own cv lock at all times past here except during our condition wait ...
-   if (pthread_mutex_lock(&WDAT.WORKER_cv_mutex))	// +++ WORKER cv lock +++
-      abend("FATAL: Can't get WORKER cv lock prior to first condition wait!\n");
+   if (( rc = pthread_mutex_lock(&(WORKER_mutex[w_id])) )) {	// +++ WORKER cv lock +++
+     asprintf(&dp, "pthread_mutex_lock(&(WORKER_mutex[%d])) = rc=%d\n", w_id, rc);
+     abend(dp);
+   }
 
-   // Transition from BORN to IDLE ...
-   pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
-   WDAT.wstate = IDLE;
-   pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
+   //### if we cannot get a worker lock, it must be BUSY, skip it
+   //### if we can get a worker lock, it must be in a condition wait state, so ...
+   //### 	release the lock and signal the worker to return to BUSY
 
-   while (1) {							// Multiple wakeup loop ...
-      if (WDAT.wstate == IDLE) {
-         // Block and wakeup when signaled by our condition variable ...
-         pthread_cond_wait(&(WDAT.WORKER_cv), &(WDAT.WORKER_cv_mutex));
-         // Transition from IDLE to BUSY ...
-         pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
-         WDAT.wstate = BUSY;
-         wakeups = N_Worker_Wakeups += 1;
-         pthread_mutex_unlock(&MP_mutex);			// --- MP lock ---
-         sprintf(msg, "@ Worker %d wakes (wakeup #%lu)\n", w_id, wakeups);
+   // Start off IDLE (ends our EMBRYONIC status) ...
+   if (PWdebug) fprintf(stderr, "= Worker %d -> IDLE ...\n", w_id);
+   MP_LOCK("start off IDLE");					// +++ MP lock +++
+   WDAT.status = IDLE;
+   MP_UNLOCK;							// --- MP lock ---
+
+   // Stay in this loop forever -- until our thread is SHUT DOWN by management ...
+   while (1) {
+      // Wait for starting gun ...
+      if (PWdebug) fprintf(stderr, "= Worker %d -> WAIT ...\n", w_id);
+      rc = pthread_cond_wait(&(WORKER_cond[w_id]), &(WORKER_mutex[w_id]));
+      if (rc) {
+         fprintf(stderr, "WAIT ERROR: w_id=%d rc=%d\n", w_id, rc);
+         assert("WAIT" == NULL);
+      }
+
+      // We're back active again!!!
+      w_wakeups += 1;
+      if (PWdebug) {
+         sprintf(msg, "@ Worker %d -> WAKES (#%u) ...\n", w_id, w_wakeups);
+         fputs(msg, stderr);
          LogMsg(msg, 1);
       }
 
-      // Now that we're BUSY, stay busy as long as FIFO can be popped ...
-      // ... but yield_cpu() to allow other threads a chance to PUSH new FIFO entries ...
+      // Track if we do anything on this wake cycle ...
+      w_fifo_pops_0 = w_fifo_pops;
+
+      // Stay BUSY as long as FIFO can be popped ...
       while (fifo_pop(WDAT.DirPath)) {
+         w_fifo_pops += 1;
+         // Transition to BUSY busy after FIRST successful pop ...
+         if (w_fifo_pops == (w_fifo_pops_0 + 1)) {
+            if (PWdebug) fprintf(stderr, "= Worker %d ->BUSY ...\n", w_id);
+            MP_LOCK("MP mutex transition to BUSY");		// +++ MP lock +++
+            WDAT.status = BUSY;
+            Workers_BUSY += 1;
+            MP_UNLOCK;						// --- MP lock ---
+            sprintf(msg, "@ Worker %d busy after wakeup %d\n", w_id, w_wakeups);
+            if (PWdebug) fputs(msg, stderr);
+            LogMsg(msg, 1);
+         }
          directory_scan(w_id);					// $$$ WORKER'S MISSION $$$
+         // Give other workers a chance push or pop FIFO!
          yield_cpu();
       }
 
-      // Transition from BUSY to IDLE ...
-      pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
-      WDAT.wstate = IDLE;
-      pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
-      sprintf(msg, "@ Worker %d idle\n", w_id);
-      LogMsg(msg, 1);
-      yield_cpu();
+      // If we were BUSY, transition to IDLE ...
+      MP_LOCK("transition to IDLE?");				// +++ MP lock +++
+      status_change = 0;
+      if (WDAT.status == BUSY) {
+         status_change = 1;
+         WDAT.status = IDLE;
+         Workers_BUSY -= 1;
+      }
+      MP_UNLOCK;						// --- MP lock ---
+
+      if (status_change) {
+         sprintf(msg, "@ Worker %d idle after %llu FIFO pops\n", w_id, (w_fifo_pops - w_fifo_pops_0));
+         if (PWdebug) fputs(msg, stderr);
+         LogMsg(msg, 1);
+      }
+
+      // Poke manager if we transitioned to IDLE ...
+      if (status_change) {
+         poke_manager("transition to IDLE");			// +/- MANAGER lock +/-
+         yield_cpu();
+      }
    }
 }
 
@@ -2222,86 +2467,66 @@ void
 manage_workers()
 {
    int w_id = 0, last_w_id_woken = -1;
-   int fifo_depth, nw_to_wake, nw_wakeups, nw_idle, nw_busy, iterations;
-   wstate_t wstate;
+   unsigned nw_to_wake, nw_wakeups, nw_idle, nw_busy;
+   count_64 fifo_depth;
+   wstatus_t wstatus;
    char msg[256];
 
-   // Worker management loop ...
-   iterations = 0;	// Cyclic [0-100]
    while (1) {
-      // Get a COHERENT inventory of worker status and FIFO status ...
-      while (1) {
-         nw_idle = nw_busy = 0;
-         pthread_mutex_lock(&MP_mutex);					// +++ MP lock +++
-         for (w_id=0; w_id < N_WORKERS; w_id++) {
-            if (WDAT.wstate == IDLE) nw_idle++;
-            if (WDAT.wstate == BUSY) nw_busy++;
-         }
-         fifo_depth = FIFO_PUSHES - FIFO_POPS;
-         pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
-         // NOTE: *ALL* worker threads *must* be either IDLE or BUSY at this
-         // juncture, so if a laggard thread needs a chance to finish being BORN,
-         // we yield to them before looping ...
-         if ((nw_idle + nw_busy) == N_WORKERS) break;			// Inventory coherent!
-         yield_cpu();
-      }
+      if (PWdebug) fprintf(stderr, "= manage_workers; get worker_status() ...\n");
+      worker_status(&nw_idle, &nw_busy, &fifo_depth);		// +++ MP lock ---
+      if (PWdebug) fprintf(stderr, "= manage_workers: nw_idle=%d nw_busy=%d fifo_depth=%llu\n",
+                      nw_idle, nw_busy, fifo_depth);
 
-      // Do a little housekeeping every few seconds ...
-      if ((iterations % 100) == 0) {	// Every ~10 seconds (100 * 100 ms loop wait)
-         if (PWdebug) {
-            sprintf(msg, "= manage_workers(fifo_depth=%d nw_idle=%d nw_busy=%d)\n",
-               fifo_depth, nw_idle, nw_busy);
-            LogMsg(msg, 0);
-         }
-         LogMsg(NULL, 1);		// Gratuitous log-flush
-         iterations = 0;
-      }
-
-      // Are we done yet?
+      // Are we there yet?
       if ((nw_busy == 0) && (fifo_depth == 0)) break;			// All done!
 
-      // Are we completely busy?
-      if (nw_busy == N_WORKERS) goto loop;	// "I'm givin' ya all we got, Captain!"
+      // Any chance we're gonna poke any workers?
+      if (nw_busy == N_WORKERS) goto loop;	// "I'm givin' ya all we got, Captain!" ...
 
-      // Wakeup workers as needed. Workers transition themselves between IDLE and BUSY.
+      // Is there unattended work in the FIFO?
+      if (fifo_depth == 0) goto loop;		// Nope ...
+
+      // Wakeup workers as needed by signalling them to transition from IDLE to BUSY.
+      // Workers transition themselves from BUSY back to IDLE.
       //
       // Determine how many workers to wake. We might wake a worker that subsequently
       // finds no work to do and rapidly returns to IDLE, but that's OK. Indeed, a newly-
       // woken worker may well find the FIFO has already been emptied by some already-BUSY
-      // worker thread, in which case it will simply remain IDLE.
+      // worker thread, in which case it will simply revert to being IDLE.
       //
-      // Note that a worker's state may have transitioned since we took our inventory
+      // Note that a worker's status may have transitioned since we took our inventory
       // above, so we inquire in a lock-protected way here. We do not care if an IDLE
       // worker was one from our inventory above; only that it's IDLE now. No worker can
       // transition back from IDLE to BUSY until and unless we wake them.
       //
       nw_to_wake = (fifo_depth < nw_idle) ? fifo_depth : nw_idle;
+      if (PWdebug) fprintf(stderr, "= manage_workers: wanna wake %d worker(s)\n", nw_to_wake);
       if (nw_to_wake > 0) {
          // Round-robin/LRU worker assign logic ...
          w_id = last_w_id_woken;
          for (nw_wakeups=0; nw_wakeups < nw_to_wake; ) {
             w_id = ((w_id+1) < N_WORKERS) ? w_id+1 : 0;
-            pthread_mutex_lock(&MP_mutex);				// +++ MP lock +++
-            wstate = WDAT.wstate;
-            pthread_mutex_unlock(&MP_mutex);				// --- MP lock ---
-            if (wstate == IDLE) {
-               // Signal for worker to wakeup ...
-               if (pthread_cond_signal(&(WDAT.WORKER_cv)))
-                  abend("FATAL: Worker cv signal error!\n");
+            MP_LOCK("probe wstatus");					// +++ MP lock +++
+            wstatus = WDAT.status;
+            MP_UNLOCK;							// --- MP lock ---
+            if (wstatus == IDLE) {
+               // Signal worker to wakeup ...
+               if (PWdebug) fprintf(stderr, "= manage_workers: waking worker %d\n", w_id);
+               assert(pthread_cond_signal(&(WORKER_cond[w_id])) == 0);
                nw_wakeups += 1;
                last_w_id_woken = w_id;
             }
          }
       }
 loop:
-      // Throttle this outer worker wakeup loop at 10 iterations per second.
-      // We yield_cpu() here to reduce scheduling contention with newly-awakened worker
-      // threads while they are transitioning between states.
-      iterations++;
-      yield_cpu();
-      usleep(100000);	// 100000us = 0.100000s delay between outer loop iterations ...
-      yield_cpu();
+      // Block until re-awakened by any worker signaling our condition variable ...
+      if (PWdebug) fprintf(stderr, "= manage_workers: waits\n");
+      if (pthread_cond_wait(&MANAGER_cond, &MANAGER_mutex))
+         abend("MANAGER cv wait error!");
+      if (PWdebug) fprintf(stderr, "= manage_workers: wakes\n");
    }
+   if (PWdebug) fprintf(stderr, "= manage_workers: exits\n");
 }
 
 // @@@ SECTION: PathName Redaction @@@
@@ -2353,14 +2578,14 @@ redact_path(char *relpath_redacted, char *relpath, ino_t relpath_inode, int w_id
       } else {
          inode[i] = sb.st_ino;
       }
-      //DEBUG fprintf(stderr, "...\"%s\" (inode=%xlu)\n", relpath_redacted, sb.st_ino);
+      //DEBUG fprintf(stderr, "...\"%s\" (inode=%llx)\n", relpath_redacted, sb.st_ino);
       *p_sep[i] = PATHSEPCHR;	// Put the PATHSEPCHR back
    }
 
    // Output into our relpath_redacted a concatenation of the inode numbers ...
    p = relpath_redacted;
    for (i=0; i<=np; i++) {
-      p += sprintf(p, "%s%lld", (np && i>0 ? "/" : ""), inode[i]);
+      p += sprintf(p, "%s%llx", (np && i>0 ? "/" : ""), inode[i]);
       assert ((p - relpath_redacted) < (MAX_PATHLEN - 18));			// klooge: crude
    }
    *p = '\0';
@@ -2412,7 +2637,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    unsigned long long rm_path_hits;	// Count files rm'd within directory ===== klooge/globalize?
    char *p, *pend;
    struct dirent *pdirent, *result;
-   struct stat dir_stat, file_stat;
+   struct stat curdir_sb, dirent_sb;
 
    // Assorted buffers ...
    char errstr[256];			// For strerror_r()
@@ -2513,7 +2738,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    }
    WS[w_id]->NOpendirs += 1;
 
-   // @@@ GATHER (directory): Get directory's metadata - fstatat() ...
+   // @@@ GATHER (directory): Get directory's metadata via fstatat() ...
    // Get fstatat() info on the now-open directory (not counted with the other stat() calls) ...
 #if SOLARIS
    dfd = dir->dd_fd;
@@ -2522,21 +2747,21 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 #endif
    ns_stat_s[0]='\0';
    if (Opt_TSTAT) t0 = gethrtime();
-   fstat(dfd, &dir_stat);		// klooge: assuming success because it's open	+++++
+   fstat(dfd, &curdir_sb);		// klooge: assuming success because it's open	+++++
    if (Opt_TSTAT) { t1 = gethrtime(); ns_stat = t1 - t0; sprintf(ns_stat_s," (%lldus) ", ns_stat/1000); }
    if (VERBOSE > 2) { fprintf(WLOG, "@stat\n"); fflush(WLOG); }
-   format_mode_bits(mode_str, dir_stat.st_mode);
+   format_mode_bits(mode_str, curdir_sb.st_mode);
    if (Opt_REDACT)
-      redact_path(RedactedRelPathDir, RelPathDir, dir_stat.st_ino, w_id);
+      redact_path(RedactedRelPathDir, RelPathDir, curdir_sb.st_ino, w_id);
 
    // Re-Initialize Directory Subtotals (DS) ...
    bzero(&DS, sizeof DS);
-   DS.NBytesNominal = dir_stat.st_size;
-   DS.NBytesAllocated = bytes_allocated = dir_stat.st_blocks * ST_BLOCK_SIZE;
+   DS.NBytesNominal = curdir_sb.st_size;
+   DS.NBytesAllocated = bytes_allocated = curdir_sb.st_blocks * ST_BLOCK_SIZE;
 
    // @@@ GATHER & OUTPUT (directory): -cmp mode ...
    if (Cmd_CMP) {
-      cmp_source_target(w_id, RelPathDir, &dir_stat, cmp_dir_result_str);
+      cmp_source_target(w_id, RelPathDir, &curdir_sb, cmp_dir_result_str);
       // If TARGET dir does not exist, save scan time by just reporting 'E' for all dir contents.
       cmp_target_dir_exists = (strpbrk(cmp_dir_result_str, "ET!") == NULL);	// 'E' or 'T' or '!'  means 'no'
       if (strcmp(cmp_dir_result_str, "-")) {		// Maybe defer this until a file difference is found
@@ -2549,7 +2774,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    // @@@ GATHER & PROCESS (directory): ACL ...
    // directory_acl = pwalk_acl_get_fd(dfd);	// DEVELOPMENTAL for +rm_acls
 #if defined(__ONEFS__)
-   acl_present = (dir_stat.st_flags & SF_HASNTFSACL);
+   acl_present = (curdir_sb.st_flags & SF_HASNTFSACL);
 #else
    acl_present = 0;	// It's a flag on OneFS, but another metadata call otherwise (for later)
 #endif
@@ -2579,7 +2804,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    if (acl_present && Opt_MODE && P_ACL_P) strcat(mode_str, "+");
 
    // @@@ GATHER (directory): Owner name, group name, owner_sid, group_sid ...
-   get_owner_group(&dir_stat, owner_name, group_name, owner_sid, group_sid);
+   get_owner_group(&curdir_sb, owner_name, group_name, owner_sid, group_sid);
 #if defined(__ONEFS__)
    onefs_get_sids((dir)->dd_fd, owner_sid, group_sid);
    // FWIW, OSX has different DIR struct ..
@@ -2590,14 +2815,14 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    // @@@ ACTION/OUTPUT (directory): Perform requested actions on <directory> itself ...
    if (Cmd_XML) {
       fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
-         bytes_allocated, (Opt_MODE ? " " : ""), mode_str, dir_stat.st_nlink, (long long) dir_stat.st_size, REDACT_RelPathDir, ns_stat_s);
+         bytes_allocated, (Opt_MODE ? " " : ""), mode_str, curdir_sb.st_nlink, (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
    } else if (Cmd_LS | Cmd_LSD) {
       if (ftell(WLOG)) fprintf(WLOG, "\n");
       fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
    } else if (Cmd_LSC) {
       if (ftell(WLOG)) fprintf(WLOG, "\n");
       if (Opt_REDACT) fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
-      else            fprintf(WLOG, "@ %llx %s\n", dir_stat.st_ino, REDACT_RelPathDir);
+      else            fprintf(WLOG, "@ %llx %s\n", curdir_sb.st_ino, REDACT_RelPathDir);
    } else if (Cmd_RM) {
       rm_path_hits = 0;		// reset for this dir; -rm does not act on directories
    } else if (Cmd_FIXTIMES) {
@@ -2607,7 +2832,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    // @@@ PROCESS (directory): +rm_acls ...
 #if defined(__ONEFS__)		// OneFS-specific features ...
    if (Cmd_RM_ACLS && !PWdryrun) {		// klooge: dupe code for <directory> vs. <dirent>
-      rc = onefs_rm_acls(dfd, RelPathDir, &dir_stat, (char *) &rc_msg);
+      rc = onefs_rm_acls(dfd, RelPathDir, &curdir_sb, (char *) &rc_msg);
       if (rc < 0) {
          WS[w_id]->NWarnings += 1;
          fprintf(WERR, "WARNING: onefs_rm_acls(\"%s\") for \"%s\"\n", rc_msg, RelPathName);
@@ -2685,7 +2910,7 @@ scandirloop:
       } else {				// Gather stat() info for dirent ...
          if (Opt_TSTAT) t0 = gethrtime();
          // NOTE: dfd aleady incorporates multipath logic ...
-         rc = fstatat(dfd, FileName, &file_stat, AT_SYMLINK_NOFOLLOW);		// $$$ PAYDAY $$$
+         rc = fstatat(dfd, FileName, &dirent_sb, AT_SYMLINK_NOFOLLOW);		// $$$ PAYDAY $$$
          if (Opt_TSTAT) { t1 = gethrtime(); sprintf(ns_stat_s," (%lldus) ", (t1-t0)/1000); }
          DS.NStatCalls += 1;
          if (rc) {
@@ -2696,30 +2921,38 @@ scandirloop:
             continue;
          }
          have_stat = 1;
-         if (Opt_REDACT) sprintf(RedactedFileName, "%lld", file_stat.st_ino);
-         format_mode_bits(mode_str, file_stat.st_mode);
+         // Cheap-to-keep WS stats ...
+         if (dirent_sb.st_ino > WS[w_id]->MAX_inode_Value_Seen)
+            WS[w_id]->MAX_inode_Value_Seen = dirent_sb.st_ino;
+         // Redaction ...
+         if (Opt_REDACT) sprintf(RedactedFileName, "%lld", dirent_sb.st_ino);
+         format_mode_bits(mode_str, dirent_sb.st_mode);
          // Make up for these bits not always being set correctly (eg: over NFS) ...
-         if S_ISREG(file_stat.st_mode) dirent_type = DT_REG;
-         else if S_ISDIR(file_stat.st_mode) dirent_type = DT_DIR;
+         if S_ISREG(dirent_sb.st_mode) dirent_type = DT_REG;
+         else if S_ISDIR(dirent_sb.st_mode) dirent_type = DT_DIR;
          else dirent_type = DT_UNKNOWN;
-         // Update per-directory misc counters ...
+         // Update DS per-directory misc counters ...
          if (dirent_type != DT_DIR) {
-            if (file_stat.st_nlink > 1) {
+            if (dirent_sb.st_nlink > 1) {
                DS.NHardLinkFiles += 1;
-               DS.NHardLinks += (file_stat.st_nlink - 1);
+               DS.NHardLinks += (dirent_sb.st_nlink - 1);
             }
-            if (dirent_type == DT_REG && file_stat.st_size == 0) DS.NZeroFiles += 1;
+            if (dirent_type == DT_REG && dirent_sb.st_size == 0) DS.NZeroFiles += 1;
          }
       }
 
       // @@@ ACTION (dirent): Quietly skip files that are not selected ...
-      if (Opt_SELECT && !selected(RelPathName, &file_stat)) continue;
+      if (SELECT_HARDCODED && !selected(RelPathName, &dirent_sb)) continue;
+
+      // Cheap-to-keep WS stats ...
+      if (dirent_sb.st_ino > WS[w_id]->MAX_inode_Value_Selected)
+         WS[w_id]->MAX_inode_Value_Selected = dirent_sb.st_ino;
 
       // @@@ ACTION (dirent): -rm selected() non-directories only unless -dryrun ...
       // NOTE: The .sh files created by -rm would NOT be safely executable, because a failed 'cd'
       // command would make the following 'rm' commands invalid -- so we output the return code
       // from each unlink() operation before the 'rm' to make the .sh files not directly executable.
-      if (Cmd_RM && selected(FileName, &file_stat)) {
+      if (Cmd_RM && selected(FileName, &dirent_sb)) {	// klooge: we're only here cuz we're selected()!
          rm_path_hits += 1;				// Want to delete this one
          rm_rc_str[0] = '0'; rm_rc_str[1] = '\0';	// Assume no error
          if (PWdryrun) {
@@ -2746,7 +2979,7 @@ scandirloop:
 
       // @@@ GATHER (dirent): Fetch and process file ACL ...
 #if defined(__ONEFS__)
-      acl_present = (file_stat.st_flags & SF_HASNTFSACL);
+      acl_present = (dirent_sb.st_flags & SF_HASNTFSACL);
 #else
       acl_present = 0;	// It's a flag on OneFS, but another metadata call elsewhere (for later)
 #endif
@@ -2756,7 +2989,7 @@ scandirloop:
       if (acl_supported && (P_ACL_P || Cmd_XACLS || Cmd_WACLS)) {
          assert(have_stat);		// klooge: primitive insurance
          // INPUT & TRANSLATE: Translate POSIX ACL plus DACL to a single ACL4 ...
-         pw_acl4_get_from_posix_acls(AbsPathName, S_ISDIR(file_stat.st_mode), &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
+         pw_acl4_get_from_posix_acls(AbsPathName, S_ISDIR(dirent_sb.st_mode), &aclstat, &acl4, pw_acls_emsg, &pw_acls_errno);
          if (PWdebug > 2) fprintf(Plog, "$ AbsPathName=\"%s\" aclstat=%d pw_acls_errno=%d\n", AbsPathName, aclstat, pw_acls_errno);
          if (Opt_TSTAT) { t2 = gethrtime(); ns_getacl = t2 - t1; sprintf(ns_getacl_s," (%lldus) ", ns_getacl/1000); }
          if (pw_acls_errno) {
@@ -2772,24 +3005,29 @@ scandirloop:
          }
          if (aclstat) {
             acl_present = TRUE;
-            if (!S_ISDIR(file_stat.st_mode)) DS.NACLs += 1;
+            if (!S_ISDIR(dirent_sb.st_mode)) DS.NACLs += 1;
          } else strcat(mode_str, ".");
       }
 #endif // PWALK_ACLS
       if (acl_present && Opt_MODE && P_ACL_P) strcat(mode_str, "+");	// Actually only works in OneFS?
 
-      // @@@ GATHER (dirent): Accumulate d/-/s/o counts ... and PUSH any directories encountered ...
-      if (S_ISDIR(file_stat.st_mode)) {		// directory
+      // @@@ GATHER (dirent): Accumulate f/d/s/o counts ... and PUSH newly-discovered directories ...
+      if (S_ISREG(dirent_sb.st_mode)) {		// ordinary
+         DS.NFiles += 1;
+      } else if (S_ISDIR(dirent_sb.st_mode)) {	// directory ... push?
          DS.NDirs += 1;
+
          // NOTE: If we are 'fixing' ACLs, we need to fix directory ACLs BEFORE they are PUSH'ed!
          // NOTE: At (depth == 0), we will assume the directory ACLs are to be preserved.
          // As soon as we PUSH this directory, some other worker may POP it, and it will not
          // do ACL inheritance operations correctly if we have not fixed the directory's ACL first.
          //onefs_acl_inherit(CurrentDirectoryACL, -1, RelPathName, isdir, depth);	// ##### klooge INCOMPLETE
-         fifo_push(RelPathName, &file_stat, w_id);
-      } else if (S_ISREG(file_stat.st_mode)) {	// ordinary
-         DS.NFiles += 1;
-      } else if (S_ISLNK(file_stat.st_mode)) {	// symlink
+         if (!Opt_SPAN && (dirent_sb.st_dev != curdir_sb.st_dev)) {	// +span enforcement
+            fprintf(WERR, "NOTICE: Skipping reference outside filesystem @ \"%s\"\n", AbsPathDir);
+         } else {
+            fifo_push(RelPathName, &dirent_sb, w_id);
+         }
+      } else if (S_ISLNK(dirent_sb.st_mode)) {	// symlink
          DS.NSymlinks += 1;
       } else {					// other
          DS.NOthers += 1;
@@ -2797,17 +3035,17 @@ scandirloop:
 
       // NOTE: To avoid multiple-counting, we only count the nominal directory sizes ONCE; when we pop them.
       // However, directory output lines will reflect the sizes reported by stat().
-      if (!S_ISDIR(file_stat.st_mode)) {
-         DS.NBytesNominal += file_stat.st_size;
-         DS.NBytesAllocated += bytes_allocated = file_stat.st_blocks * ST_BLOCK_SIZE;
+      if (!S_ISDIR(dirent_sb.st_mode)) {
+         DS.NBytesNominal += dirent_sb.st_size;
+         DS.NBytesAllocated += bytes_allocated = dirent_sb.st_blocks * ST_BLOCK_SIZE;
       }
 
       // @@@ GATHER (dirent): Owner name & group name ...
-      get_owner_group(&file_stat, owner_name, group_name, owner_sid, group_sid);
+      get_owner_group(&dirent_sb, owner_name, group_name, owner_sid, group_sid);
 
       // @@@ GATHER (dirent): '+tally' accumulation ...
       if (Cmd_TALLY)
-         pwalk_tally_file(&file_stat, w_id);
+         pwalk_tally_file(&dirent_sb, w_id);
 
       // @@@ READONLY (BEGIN): READONLY operations (+crc, +md5, +denist, etc) @@@
       // open() file READONLY if we need to read file or get a file handle to query.
@@ -2818,7 +3056,7 @@ scandirloop:
       openit = (Cmd_RM_ACLS || (PWget_MASK & PWget_SD));			// MUST open!
       crc_val = md5_val = 0;
       if ((dirent_type == DT_REG) && (Cmd_DENIST || P_CRC32 || P_MD5)) {	// MIGHT open ...
-          if (file_stat.st_size == 0) WS[w_id]->READONLY_Zero_Files += 1;
+          if (dirent_sb.st_size == 0) WS[w_id]->READONLY_Zero_Files += 1;
          else openit = 1;
       }
       if (!openit) goto outputs;
@@ -2847,12 +3085,12 @@ scandirloop:
          nbytes = crc32(fd, (void *) rbuf, sizeof(rbuf), &crc_val);
          if (nbytes > 0) WS[w_id]->READONLY_CRC_Bytes += nbytes;
          // Cross-check that we read all bytes of the file ...
-         // ==== if (nbytes != file_stat.st_size) WS[w_id]->READONLY_Errors += 1;	// === Add error!
+         // ==== if (nbytes != dirent_sb.st_size) WS[w_id]->READONLY_Errors += 1;	// === Add error!
       }
 #if defined(__ONEFS__)
       // @@@ READONLY (OneFS) +rm_acls ...
       if (Cmd_RM_ACLS && !PWdryrun) {
-         rc = onefs_rm_acls(fd, RelPathName, &file_stat, (char *) &rc_msg);
+         rc = onefs_rm_acls(fd, RelPathName, &dirent_sb, (char *) &rc_msg);
          // klooge: add counters for ACLs modified or removed (rc == 1 or 2, respectively)
          if (rc < 0) {
             WS[w_id]->NWarnings += 1;
@@ -2888,30 +3126,30 @@ outputs:
 //    struct timespec st_ctimespec;  /* time of last file status change */
 //    struct timespec st_birthtimespec;  /* time of file creation */
       fprintf(WLOG, "<file>%s%s %lld %s%s b=%lu c=%lu a=%lu m=%lu%s </file>\n",
-         (PMODE ? " " : ""), mode_str, (long long) file_stat.st_size, FileName, ns_stat_s,
-         UL(file_stat.st_birthtime), UL(file_stat.st_ctime), UL(file_stat.st_atime), UL(file_stat.st_mtime),
-         (UL(file_stat.st_birthtime) != UL(file_stat.st_ctime)) ? " NOTE: B!=C" : ""
+         (PMODE ? " " : ""), mode_str, (long long) dirent_sb.st_size, FileName, ns_stat_s,
+         UL(dirent_sb.st_birthtime), UL(dirent_sb.st_ctime), UL(dirent_sb.st_atime), UL(dirent_sb.st_mtime),
+         (UL(dirent_sb.st_birthtime) != UL(dirent_sb.st_ctime)) ? " NOTE: B!=C" : ""
          );
-      //    (UL(file_stat.st_mtime) != UL(file_stat.st_ctime)) ? " NOTE: M!=C" : ""
+      //    (UL(dirent_sb.st_mtime) != UL(dirent_sb.st_ctime)) ? " NOTE: M!=C" : ""
 #endif
 
       // @@@ OUTPUT (dirent): Mutually-exclusive primary modes ...
-      if (Cmd_LSD || (Opt_SELECT && !selected(FileName, &file_stat))) {	// No per-file output!
+      if (Cmd_LSD || (SELECT_HARDCODED && !selected(FileName, &dirent_sb))) {	// No per-file output!
          ;
       } else if (Cmd_LS) {		// -ls
          fprintf(WLOG, "%s %u %lld %s%s%s\n",
-            (Opt_MODE ? mode_str : ""), file_stat.st_nlink, (long long) file_stat.st_size, REDACT_FileName, ns_stat_s, crc_str);
+            (Opt_MODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
       } else if (Cmd_LSC) {		// -lsc
-         if (!S_ISDIR(file_stat.st_mode)) {
+         if (!S_ISDIR(dirent_sb.st_mode)) {
             if (Opt_REDACT) fprintf(WLOG, "%c %s\n", mode_str[0], REDACT_FileName);
-            else            fprintf(WLOG, "%c %llu %s\n", mode_str[0], file_stat.st_ino, FileName);
+            else            fprintf(WLOG, "%c %llu %s\n", mode_str[0], dirent_sb.st_ino, FileName);
          }
       } else if (Cmd_XML) {		// -xml
          fprintf(WLOG, "<file> %s %u %lld %s%s%s </file>\n",
-            (Opt_MODE ? mode_str : ""), file_stat.st_nlink, (long long) file_stat.st_size, REDACT_FileName, ns_stat_s, crc_str);
+            (Opt_MODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
       } else if (Cmd_CMP) {		// -cmp
          if (cmp_target_dir_exists)
-            cmp_source_target(w_id, RelPathName, &file_stat, cmp_file_result_str);
+            cmp_source_target(w_id, RelPathName, &dirent_sb, cmp_file_result_str);
          else // File CANNOT exist!
             strcpy(cmp_file_result_str, "E");
          if (strcmp(cmp_file_result_str, "-")) {	// Only report differences
@@ -2924,18 +3162,18 @@ outputs:
          }
       } else if (Cmd_AUDIT) {		// -audit
 #if PWALK_AUDIT // OneFS only
-         pwalk_audit_file(RelPathName, &file_stat, crc_val, w_id);
+         pwalk_audit_file(RelPathName, &dirent_sb, crc_val, w_id);
 #else
-         abend("FATAL: -audit not supported");
+         abend("-audit not supported");
 #endif // PWALK_AUDIT
       } else if (Cmd_FIXTIMES) {	// -fixtimes
-         pwalk_fix_times(FileName, RelPathName, &file_stat, w_id);
+         pwalk_fix_times(FileName, RelPathName, &dirent_sb, w_id);
       } else if (Cmd_CSV) {		// -csv= (DEVELOPMENTAL: Temporary placeholder code)
-         if (Opt_SELECT) {
+         if (SELECT_HARDCODED) {
             fprintf(WLOG, "\"%s\"\n", RelPathName);
          } else {			// klooge: SHOULD BE call to reporting module
             fprintf(WLOG, "%u,%s,%s,%u,%s,%s,\"%s\"\n",
-               file_stat.st_uid, owner_name, owner_sid, file_stat.st_gid, group_name, group_sid, RelPathName);
+               dirent_sb.st_uid, owner_name, owner_sid, dirent_sb.st_gid, group_name, group_sid, RelPathName);
          }
       }
 
@@ -2954,7 +3192,7 @@ outputs:
          }
          if (Cmd_XACLS & Cmd_XACLS_CHEX) {
             if (!WDAT.XACLS_CHEX_FILE) worker_aux_create(w_id, &(WDAT.XACLS_CHEX_FILE), "acl4chex");
-            pw_acl4_fprintf_chex(&acl4, RelPathName, &file_stat, WDAT.XACLS_CHEX_FILE);
+            pw_acl4_fprintf_chex(&acl4, RelPathName, &dirent_sb, WDAT.XACLS_CHEX_FILE);
          }
          if (Cmd_XACLS & Cmd_XACLS_NFS) {
             if (!WDAT.XACLS_NFS_FILE) worker_aux_create(w_id, &(WDAT.XACLS_NFS_FILE), "acl4nfs");
@@ -2962,7 +3200,7 @@ outputs:
          }
          if (Cmd_XACLS & Cmd_XACLS_ONEFS) {
             if (!WDAT.XACLS_ONEFS_FILE) worker_aux_create(w_id, &(WDAT.XACLS_ONEFS_FILE), "acl4onefs");
-            pw_acl4_fprintf_onefs(&acl4, RelPathName, &file_stat, WDAT.XACLS_ONEFS_FILE);
+            pw_acl4_fprintf_onefs(&acl4, RelPathName, &dirent_sb, WDAT.XACLS_ONEFS_FILE);
          }
       }
 #endif // PWALK_ACLS
@@ -2995,11 +3233,13 @@ exit_scan:
             DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
          fprintf(WLOG, "</directory>\n");
       } else if (Cmd_LS || Cmd_LSD) {
-         fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu errs=%llu space=%llu size=%llu\n",
-            DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
+         fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu z=%llu space=%llu size=%llu errs=%llu\n",
+            DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers,
+            DS.NZeroFiles, DS.NBytesAllocated, DS.NBytesNominal, DS.NStatErrors);
       } else if (Cmd_LSC) {
-         fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu errs=%llu space=%llu size=%llu\n",
-            DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
+         fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu z=%llu space=%llu size=%llu errs=%llu\n",
+            DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers,
+            DS.NZeroFiles, DS.NBytesAllocated, DS.NBytesNominal, DS.NStatErrors);
       }
    }
    fflush(WLOG);	// Flush worker's output at end of each directory ...
@@ -3015,36 +3255,46 @@ check_maxfiles(void)
 {
    struct rlimit rlimit;
 
-   // This is just a close APPROXIMATION of what we'll need for concurrently-open files ...
+   // APPROXIMATION of what we may need for concurrently-open files ...
    //
-   // Persistent - per-worker -> (6*N_WORKERS) + (Cmd_AUDIT ? N_WORKERS : 0)
-   //	#N_WORKERS – Primary output (.ls, .xml, .audit, .cmp, .fix, .out)
-   //	#4*N_WORKERS – ACL outputs (including –wacls= pipe)
-   //	#N_WORKERS – Python IPC pipe for -audit
-   // Persistent - per-process (6 + N_SOURCE_PATHS + N_TARGET_PATHS)
-   //	#N_SOURCE_PATHS + #N_TARGET_PATHS - SOURCE and TARGET paths
-   //	#1 - .log file
-   //	#2 - .fifo (push and pop handles)
-   //	#3 - stdin, stdout, stderr
-   // Transient - ...
-   //	#1 - .tally output
-   //   #N_WORKER - parent DIR*
-   //   #N_WORKER - READONLY file operations
+   // Persistent + per-worker ...
+   //	1 - .log file
+   //	2 - .fifo (push and pop handles)
+   //	3 - stdin, stdout, stderr
+   //   N_WORKERS - .err
+   //	N_WORKERS – Primary output (.ls, .xml, .audit, .cmp, .fix, .out) - iff primary mode given
+   //   N_WORKERS - READONLY file operations
+   //   N_WORKERS - current directory
+   //	N_SOURCE_PATHS - for relative root handle
+   //   N_TARGET_PATHS - for relative root handle
+   // With +tally -> (Cmd_TALLY ? 1 : 0)
+   // With -audit -> (Cmd_AUDIT ? N_WORKERS : 0) - for Python IPC pipes
+   // With ACL options -> (==== : 4*N_WORKERS : 0)
+
+   // How many files are we allowed?
+   assert (getrlimit(RLIMIT_NOFILE, &rlimit) == 0);
 
    // What might we need?
-   MAX_OPEN_FILES = (6*N_WORKERS) + (Cmd_AUDIT ? N_WORKERS : 0) + (6 + N_SOURCE_PATHS + N_TARGET_PATHS);
+   MAX_OPEN_FILES = 1 + 2 + 3 + 4*N_WORKERS + N_SOURCE_PATHS + N_TARGET_PATHS
+	+ (Cmd_TALLY ? 1 : 0)
+	+ (Cmd_AUDIT ? N_WORKERS : 0)
+        + (Cmd_WACLS ? N_WORKERS : 0)
+        + (Cmd_XACLS & Cmd_XACLS_BIN ? N_WORKERS : 0)
+        + (Cmd_XACLS & Cmd_XACLS_CHEX ? N_WORKERS : 0)
+        + (Cmd_XACLS & Cmd_XACLS_NFS ? N_WORKERS : 0)
+        + (Cmd_XACLS & Cmd_XACLS_ONEFS ? N_WORKERS : 0);
 
    // Do we have enough?
-   assert (getrlimit(RLIMIT_NOFILE, &rlimit) == 0);
    if (MAX_OPEN_FILES <= rlimit.rlim_cur) return;	// No worries!
 
    // Can we get enough?
    if (MAX_OPEN_FILES > rlimit.rlim_max) {		// No way!
-      fprintf(Plog, "ERROR: MAX_OPEN_FILES (%d) > RLIMIT_NOFILE rlim_max (%llu)\n", MAX_OPEN_FILES, rlimit.rlim_max);
+      fprintf(Plog, "ERROR: MAX_OPEN_FILES (%d) > RLIMIT_NOFILE rlim_max (%llu)\n",
+         MAX_OPEN_FILES, rlimit.rlim_max);
       exit(-1);
    }
 
-   // Can we increase the current limit?
+   // Can we increase our limit?
    // DEBUG: fprintf(Plog, "NOTICE: setrlimit %llu / %d / %llu\n", rlimit.rlim_cur, MAX_OPEN_FILES, rlimit.rlim_max);
    rlimit.rlim_cur = MAX_OPEN_FILES;
    if (setrlimit(RLIMIT_NOFILE, &rlimit)) {		// Nope!
@@ -3082,10 +3332,11 @@ get_since_time(char *pathname)
    int rc;
 
    assert(stat(pathname, &sb) == 0);		// klooge: crude
-   T_SINCE = sb.st_mtimespec.tv_sec;
+   SELECT_T_SINCE = sb.st_mtimespec.tv_sec;
 }
 
-// process_arglist() - Process command-line options w/ rudimentary error-checking ...
+// process_arglist() - Process command-line options w/ rudimentary error-checking.
+// Errors log to stderr; there's no WLOG stream yet.
 
 void
 process_arglist(int argc, char *argv[])
@@ -3173,12 +3424,19 @@ process_arglist(int argc, char *argv[])
          P_ACL_P = TRUE;
       } else if (strcmp(arg, "+crc") == 0) {		// Tag-along modes ...
          P_CRC32 = 1;
-      } else if (strcmp(arg, "-select") == 0) {
-         Opt_SELECT = 1;
+      } else if (strcmp(arg, "-select") == 0) {		// klooge: hard-coded -select criteria
+         SELECT_HARDCODED = 1;
+#if defined(__ONEFS__)
+      } else if (strcmp(arg, "-select=fake") == 0) {	// Only on OneFS native!
+         SELECT_FAKE = 1;
+#endif // __ONEFS__
       } else if (strncmp(arg, "-since=", 7) == 0) {	// klooge: for INTERIM selected() logic
+         SELECT_SINCE = 1;
          get_since_time(arg+7);
       } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
          Opt_SKIPSNAPS = 0;
+      } else if (strcmp(arg, "+span") == 0) {		// include dirs that cross filesystems
+         Opt_SPAN = 1;
       } else if (strcmp(arg, "+tstat") == 0) {		// also add timed stats
          Opt_TSTAT = 1;
       } else if (strcmp(arg, "-gz") == 0) {
@@ -3306,19 +3564,18 @@ process_arglist(int argc, char *argv[])
       exit(-1);
    }
 
-   // @@@ ... Establish SOURCE and TARGET relative-root DFD's & related sanity checks @@@
-
-   // Check if we'll be able to open all the files we need ...
+   // @@@ ... Check if we'll be able to open all the files we may need ...
    // NOTE: This check MUST follow -pfile= parsing, but before multipaths are opened.
    check_maxfiles();
 
-   // @@@ ... BIG MOMENT HERE: Open all the source and target root paths, or die trying ...
+   // @@@ ... Establish multi-path SOURCE and TARGET relative-root DFD's & related sanity checks @@@
+   //     ... BIG MOMENT HERE: Open all the source and target root paths, or die trying!
    for (i=0; i<N_SOURCE_PATHS; i++)
       setup_root_path(&SOURCE_PATHS[i], &SOURCE_DFDS[i], &SOURCE_INODES[i]);	// exits on failure!
    for (i=0; i<N_TARGET_PATHS; i++)
       setup_root_path(&TARGET_PATHS[i], &TARGET_DFDS[i], &TARGET_INODES[i]);	// exits on failure!
 
-   // @@@ ... Sanity check all equivalent paths must resolve to same inode number ...
+   // ... Sanity check all equivalent paths must resolve to same inode number ...
    // ... as they will when they all represent mounts of the same remote directory.  When mount points are
    // NOT mounted, they will return distinct inode numbers from the host system.
    if (N_SOURCE_PATHS > 1)		// must all point to same place!
@@ -3326,22 +3583,22 @@ process_arglist(int argc, char *argv[])
          if (SOURCE_INODES[i] != SOURCE_INODES[0])
             { fprintf(Plog, "ERROR: Not all source paths represent same inode! Check mounts?\n"); exit(-1); }
 
-   if (N_TARGET_PATHS > 1)		// must all point to same place!
+   if (N_TARGET_PATHS > 1)		// 'equivalent' paths must actually all point to same place!
       for (i=1; i<N_TARGET_PATHS; i++)
          if (TARGET_INODES[i] != TARGET_INODES[0])
             { fprintf(Plog, "ERROR: Not all target paths represent same inode! Check mounts?\n"); exit(-1); }
 
    if ((N_TARGET_PATHS > 0) && (TARGET_INODES[0] == SOURCE_INODES[0]))
-         { fprintf(Plog, "ERROR: source and target paths cannot point to the same directory!\n"); exit(-1); }
+         { fprintf(Plog, "ERROR: source and target paths cannot point to the same place!\n"); exit(-1); }
 
    // @@@ ... Other argument sanity checks ...
 
    if (N_WORKERS < 0 || N_WORKERS > MAX_WORKERS) {
       fprintf(Plog, "ERROR: -dop=<N> must be on the range [1 .. %d]!\n", MAX_WORKERS);
-      exit(-1);
+      badarg = TRUE;
    }
 
-   if (!Opt_SELECT && T_SINCE != 0) {		// klooge: '-since=' is TEMPORARY code
+   if (!SELECT_HARDCODED && SELECT_T_SINCE != 0) {		// klooge: '-since=' is TEMPORARY code
       fprintf(Plog, "ERROR: -since=<file> requires -select option!\n");
       badarg = TRUE;
    }
@@ -3370,32 +3627,44 @@ main(int argc, char *argv[])
    char *emsg;
    // Statistics ...
    double t_elapsed_sec;
-   char ebuf[64];
+   char ebuf[64], s64[64], *str;
    struct rusage p_usage, c_usage;
    struct tms cpu_usage;
    struct utsname uts;
+   struct rlimit rlimit;
    int dirarg_count = 0;	// Default to "." if none on command line
    int exit_status = 0;		// Succeed by default
+   sigset_t sigmask;
+
+   unsigned nw_busy;
+   count_64 fifo_depth;
 
    // ------------------------------------------------------------------------
 
-   // Die quickly if not 64-bit file offsets ...
+   // Globalize UID and GID values ...
+   USER.uid = getuid();
+   USER.euid = geteuid();
+   USER.gid = getgid();
+   USER.egid = getegid();
+
+   // Die quickly if not using 64-bit file offsets!
    assert ( sizeof(GS.NBytesAllocated) == 8 );
+
+   // Allow only selected signals ...
+   //==== sigemptyset(&sigmask);
+   //==== sigaddset(&sigmask, SIGBUS);
+   //==== sigaddset(&sigmask, SIGSEGV);
+   //==== assert(sigprocmask(SIG_SETMASK, &sigmask, NULL) == 0);
 
    // Default Plog output to stderr, flushing on newlines. We'll replace this with
    // a shared buffered log stream after our output directory is created.
-   Plog = fopen("/dev/stderr", "w");
-   setvbuf(Plog, NULL, _IOLBF, 2048);
+   Plog = fopen("/dev/stderr", "a");
+   setvbuf(Plog, NULL, _IOLBF, 8192);
 
 #if defined(__LINUX__)
    // Get CLK_TIC (when not #defined) ...
    CLK_TCK = sysconf(_SC_CLK_TCK);
 #endif
-
-   // Capture our start times ...
-   T_START_ns = gethrtime();			// hi-res
-   gettimeofday(&T_START_tv, NULL);		// timeval (tv_sec, tv_ns)
-   T_START_s = T_START_tv.tv_sec;		// time_t (s)
 
    // Take note of our default directory ...
 #if defined(SOLARIS) || defined(__LINUX__)
@@ -3410,16 +3679,18 @@ main(int argc, char *argv[])
 
    // ------------------------------------------------------------------------
 
-   // Initialize global mutexes ...
-   init_main_mutexes();
-
    // Process command-line options ...
    // NOTE: Up through argument validation, errors go to stderr ...
    process_arglist(argc, argv);
 
+   // Initialize global mutexes ...
+   init_main_mutexes();
+
    // Create output dir (OUTPUT_DIR), pwalk.log (Plog), and pwalk.fifo ...
    // NOTE: After this, errors all go to Plog rather than stderr ...
    init_main_outputs();
+
+   fprintf(Plog, "NOTICE: --- Arguments ---\n");
 
    // Log command-line recap ...
    fprintf(Plog, "NOTICE: cmd =");
@@ -3435,14 +3706,27 @@ main(int argc, char *argv[])
    for (i=0; i<N_TARGET_PATHS; i++)
       fprintf(Plog, "NOTICE: target[%d] = %s\n", i, TARGET_PATHS[i]);
 
-   if (Opt_SELECT && T_SINCE != 0)	// NOTE: ctime() provides the '\n' here ...
-      fprintf(Plog, "NOTICE: -select -since = %s", ctime(&T_SINCE));
+   if (SELECT_HARDCODED && SELECT_T_SINCE != 0)	// NOTE: ctime() provides the '\n' here ...
+      fprintf(Plog, "NOTICE: -select -since = %s", ctime(&SELECT_T_SINCE));
 
+   fprintf(Plog, "NOTICE: --- Platform ---\n");
    (void) uname(&uts);
-   fprintf(Plog, "NOTICE: utsname = %s (%s %s %s %s)\n",
-      uts.nodename, uts.sysname, uts.release, uts.version, uts.machine);
+   fprintf(Plog, "NOTICE: uts.nodename = %s\n", uts.nodename);
+   fprintf(Plog, "NOTICE: uts.sysname  = %s\n", uts.sysname);
+   fprintf(Plog, "NOTICE: uts.release  = %s\n", uts.release);
+   fprintf(Plog, "NOTICE: uts.version  = %s\n", uts.version);
+   fprintf(Plog, "NOTICE: uts.machine  = %s\n", uts.machine);
+
+   fprintf(Plog, "NOTICE: --- Process ---\n");
    fprintf(Plog, "NOTICE: pid = %d\n", getpid());
    fprintf(Plog, "NOTICE: MAX_OPEN_FILES = %d\n", MAX_OPEN_FILES);
+   assert (getrlimit(RLIMIT_NOFILE, &rlimit) == 0);
+   fprintf(Plog, "NOTICE: RLIMIT_NOFILES = %llu\n", rlimit.rlim_cur);
+   // OSX uses 0x7fffffffffffffff and Linux uses 0xffffffffffffffff - for 'unlimited'
+   assert (getrlimit(RLIMIT_CORE, &rlimit) == 0);
+   sprintf(s64, "%llu", rlimit.rlim_cur);
+   str = (rlimit.rlim_cur >= 0x7fffffffffffffff) ? "unlimited" : s64;
+   fprintf(Plog, "NOTICE: RLIMIT_CORE    = %s\n", str);
 
    // Push initial command-line <directory> args to FIFO ...
    for (i=1; i < argc; i++)
@@ -3463,17 +3747,24 @@ main(int argc, char *argv[])
 
    // ------------------------------------------------------------------------
 
+   if (PWdebug) {
+      worker_status(NULL, &nw_busy, &fifo_depth);
+      fprintf(stderr, "= main: nw_busy=%u fifo_depth=%llu\n", nw_busy, fifo_depth);
+   }
+
+   // Capture our start times ...
+   gettimeofday(&T_START_tv, NULL);		// timeval (tv_sec, tv_ns)
+
    // @@@ Main runtime loop ...
-   manage_workers();		// Runs until all workers are IDLE and FIFO is empty
+   T_START_hires = gethrtime();		// Start hi-res work clock
+   manage_workers();			// Runs until all workers are IDLE and FIFO is empty
+   T_FINISH_hires = gethrtime();	// Stop hi-res work clock
 
    // ------------------------------------------------------------------------
 
-   // Stop the clock ...
-   T_FINISH_ns = gethrtime();
-
    // Force flush Plog. HENCEFORTH, FURTHER Plog WRITES CAN JUST fprintf(Plog ...) ...
    LogMsg(NULL, 1);
-   fprintf(Plog, "NOTICE: %s Ends\n", PWALK_VERSION);
+   fprintf(Plog, "NOTICE: +++ %s Ends +++\n", PWALK_VERSION);
 
    // @@@ Aggregate per-worker-stats (WS[w_id]) to program's global-stats (GS) (lockless) ...
    // ... regardless of whether or not the statistic was actually accumulated by the workers.
@@ -3501,7 +3792,11 @@ main(int argc, char *argv[])
       GS.READONLY_DENIST_Bytes += WS[w_id]->READONLY_DENIST_Bytes;
       GS.NPythonCalls += WS[w_id]->NPythonCalls;
       GS.NPythonErrors += WS[w_id]->NPythonErrors;
-
+      // @@@ Cheap-to-keep WS -> GS stats aggregation ...
+      if (GS.MAX_inode_Value_Seen < WS[w_id]->MAX_inode_Value_Seen)
+         GS.MAX_inode_Value_Seen = WS[w_id]->MAX_inode_Value_Seen;
+      if (GS.MAX_inode_Value_Selected < WS[w_id]->MAX_inode_Value_Selected)
+         GS.MAX_inode_Value_Selected = WS[w_id]->MAX_inode_Value_Selected;
       // @@@ #tally: accumulate GS totals from WS subtotals ...
       if (Cmd_TALLY) {
          for (i=0; i<TALLY_BUCKETS; i++) {
@@ -3569,9 +3864,8 @@ main(int argc, char *argv[])
    // @@@ ... Summary pwalk stats ...
    fprintf(Plog, "NOTICE: Summary pwalk stats ...\n");
    fprintf(Plog, "NOTICE: %16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
+   fprintf(Plog, "NOTICE: %16llu - pop%s\n", FIFO_POPS, (FIFO_POPS != 1) ? "s" : "");
    fprintf(Plog, "NOTICE: %16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu - worker wakeup%s\n",
-           N_Worker_Wakeups, (N_Worker_Wakeups != 1) ? "s" : "");
    if (GS.NPythonCalls > 0) 
       fprintf(Plog, "NOTICE: %16llu - Python call%s from -audit\n",
          GS.NPythonCalls, (GS.NPythonCalls != 1) ? "s" : "");
@@ -3624,6 +3918,10 @@ main(int argc, char *argv[])
          fprintf(Plog, "NOTICE: %16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
    }
 
+   // @@@ Cheap-to-keep GS counters ...
+   fprintf(Plog, "NOTICE: %16llu - MAX inode value seen\n", GS.MAX_inode_Value_Seen);
+   fprintf(Plog, "NOTICE: %16llu - MAX inode value selected()\n", GS.MAX_inode_Value_Selected);
+
    // @@@ ... Command line recap ...
    fprintf(Plog, "NOTICE: cmd =");
    for (i=0; i<argc; i++) fprintf(Plog, " %s", argv[i]);
@@ -3636,10 +3934,10 @@ main(int argc, char *argv[])
            ((cpu_usage.tms_stime + cpu_usage.tms_cstime) / (double) CLK_TCK) );
 
    // @@@ ... Elapsed time ...
-   t_elapsed_sec = (T_FINISH_ns - T_START_ns) / 1000000000.; // convert nanoseconds to seconds
+   t_elapsed_sec = (T_FINISH_hires - T_START_hires) / 1000000000.; // convert nanoseconds to seconds
    fprintf(Plog, "NOTICE: %llu files, %s elapsed, %3.0f files/sec\n",
       GS.NFiles+GS.NDirs+GS.NOthers,
-      format_ns_delta_t(ebuf, T_START_ns, T_FINISH_ns),
+      format_ns_delta_t(ebuf, T_START_hires, T_FINISH_hires),
       (t_elapsed_sec > 0.) ? ((GS.NFiles+GS.NDirs+GS.NOthers)/(t_elapsed_sec)) : 0.);
 
    // @@@ Final Sanity Checks and Warnings @@@
@@ -3659,9 +3957,9 @@ main(int argc, char *argv[])
 
    // @@@ Cleanup all worker threads @@@
    for (i=0; i<N_WORKERS; i++)
-      pthread_cancel(WorkerData[i].thread);
+      pthread_cancel(WORKER_pthread[i]);
    for (i=0; i<N_WORKERS; i++)
-      pthread_join(WorkerData[i].thread, NULL);
+      pthread_join(WORKER_pthread[i], NULL);
 
    exit(exit_status);
 }

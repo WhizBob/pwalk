@@ -5,6 +5,7 @@
 
 // OneFS-specific definitions ...
 typedef struct {
+   // Worm state ...
    int w_committed;             // Three values from OneFS WORM state for LIN ...
    struct timeval w_ctime;		// (only time_t prior to OneFS 8.2?)
    time_t w_retention_date;
@@ -13,9 +14,11 @@ typedef struct {
    time_t w_max_retention;
    time_t w_def_retention;
    time_t w_override_date;
-// ==== exposed values from pctl2_get_expattr
-// ==== calculated values ...
-} worm_info_t;
+   // Worm state calculated values ...
+
+   // Disk pool info ...
+
+} pw_ifs_info_t;
 
 #if !defined(_dirdesc)		// Needed in OneFS 8 ...
 struct _dirdesc {
@@ -36,7 +39,7 @@ struct _dirdesc {
 void onefs_map_uid_to_sid(int uid, char *sid);
 void onefs_map_gid_to_sid(int gid, char *sid);
 void onefs_get_sids(int fd, char *owner_sid, char *group_sid);
-int onefs_get_w_stat(const ino_t lin, worm_info_t *wi);
+int onefs_get_w_stat(const ino_t lin, pw_ifs_info_t *wi);
 int onefs_rm_acls(int fd, char *pathname, struct stat *sb, char *errmsg);
 
 // @@@ Non-OneFS proxies for OneFS-specific functions ...
