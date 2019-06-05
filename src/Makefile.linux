@@ -6,7 +6,7 @@ PWALK_C=pwalk.c pwalk_acls.c pwalk_report.c pwalk_sums.c
 PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
 PWALK_FLAGS=-lacl -lm -lrt -lpthread -g
 
-all: pwalk xacls hacls chexcmp pwalk_ls_cat
+all: pwalk xacls hacls chexcmp mystat pwalk_ls_cat
 
 clean:
 	rm -f pwalk xacls hacls chexcmp core.*

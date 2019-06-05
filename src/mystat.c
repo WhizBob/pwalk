@@ -95,7 +95,7 @@ main(int argc, char *argv[])
       sprintf(st_gen_str, "%d", sb.st_gen);
       sprintf(st_flags_str, "0x%X", sb.st_flags);
 #endif
-      printf("%s:\n     st_dev=%d st_rdev=%d st_ino=%s st_gen=%s st_flags=%o\n     st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d\n     st_size=%lld st_blksize=%d st_blocks=%llu\n     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
+      printf("%s:\n     st_dev=%d st_rdev=%d st_ino=%s st_gen=%s st_flags=%s\n     st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d\n     st_size=%lld st_blksize=%d st_blocks=%llu\n     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
         filename,
    	sb.st_dev,
    	sb.st_rdev,
