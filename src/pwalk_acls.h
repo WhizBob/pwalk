@@ -153,57 +153,77 @@ static struct {
    short isdir;			// non-zero if word applies to directories
    short flags;			// non-zero if word applies to flags instead of mask
 } onefs_keyword_mask[] = {
-   {0x01000000, "read_write_sacl", 0, 0},	// OneFS
-   {0x10000000, "generic_all", 0, 0},		// OneFS
-   {0x20000000, "generic_exec", 0, 0},		// OneFS
-   {0x40000000, "generic_write", 0, 0},		// OneFS
-   {0x80000000, "generic_read", 0, 0},		// OneFS
-   {0x000F0000, "std_required", 0, 0},		// OneFS
+   {0x00000001, "file_read", 0, 0},		// OneFS
+   {0x00000001, "list", 1, 0},			// OneFS directory
+   {0x00000002, "add_file", 1, 0},		// OneFS directory
+   {0x00000002, "file_write", 0, 0},		// OneFS
+   {0x00000004, "add_subdir", 1, 0},		// OneFS directory
+   {0x00000004, "append", 0, 0},		// OneFS
+   {0x00000008, "dir_read_ext_attr", 1, 0},	// OneFS directory
+   {0x00000008, "file_read_ext_attr", 0, 0},	// OneFS
+   {0x00000010, "dir_write_ext_attr", 1, 0},	// OneFS directory
+   {0x00000010, "file_write_ext_attr", 0, 0},	// OneFS
+   {0x00000020, "execute", 0, 0},		// OneFS
+   {0x00000020, "traverse", 1, 0},		// OneFS directory
+   {0x00000040, "delete_child", 0, 0},		// OneFS
+   {0x00000040, "delete_child", 1, 0},		// OneFS directory
+   {0x00000080, "dir_read_attr", 1, 0},		// OneFS directory
+   {0x00000080, "file_read_attr", 0, 0},	// OneFS
+   {0x00000100, "dir_write_attr", 1, 0},	// OneFS directory
+   {0x00000100, "file_write_attr", 0, 0},	// OneFS
    {0x00010000, "std_delete", 0, 0},		// OneFS
    {0x00020000, "std_read_dac", 0, 0},		// OneFS
    {0x00040000, "std_write_dac", 0, 0},		// OneFS
    {0x00080000, "std_write_owner", 0, 0},	// OneFS
+
+   //{0x01000000, "read_write_sacl", 0, 0},	// OneFS special internal values
+   //{0x10000000, "generic_all", 0, 0},		// OneFS
+   //{0x20000000, "generic_exec", 0, 0},	// OneFS
+   //{0x40000000, "generic_write", 0, 0},	// OneFS
+   //{0x80000000, "generic_read", 0, 0},	// OneFS
+   {0x000D0156, "modify", 0, 0},		// OneFS
+   {0x000F0000, "std_required", 0, 0},		// OneFS
    {0x00100000, "std_synchronize", 0, 0},	// OneFS
-   {0x00000001, "file_read", 0, 0},		// OneFS
-   {0x00000001, "read", 0, 0},			// OSX - NOTE: OSX keywords are PRELIMINARY / LIMITED
+   {0x00120020, "dir_gen_execute", 1, 0},	// OneFS
+   {0x00120020, "file_gen_execute", 0, 0},	// OneFS
+   {0x00120089, "dir_gen_read", 1, 0},		// OneFS
+   {0x00120089, "file_gen_read", 0, 0},		// OneFS
+   {0x00120116, "dir_gen_write", 1, 0},		// OneFS
+   {0x00120116, "file_gen_write", 0, 0},	// OneFS
+   {0x001F01FF, "dir_gen_all", 1, 0},		// OneFS
+   {0x001F01FF, "file_gen_all", 0, 0},		// OneFS
+
+   {0x00000001, "object_inherit", 1, 1},	// OneFS flags
+   {0x00000002, "container_inherit", 1, 1},	// OneFS
+   {0x00000004, "no_prop_inherit", 1, 1},	// OneFS
+   {0x00000008, "inherit_only", 1, 1},		// OneFS
+   {0x00000080, "inherited_ace", 0, 1},		// OneFS
+
+   {0x00000001, "read", 0, 0},			// OSX perms
+   {0x00000001, "list", 1, 0},			// OSX
    {0x00000002, "write", 0, 0},			// OSX
+   {0x00000002, "add_file", 1, 0},		// OSX
+   {0x00000004, "append", 0, 0},		// OSX
+   {0x00000004, "add_subdirectory", 1, 0},	// OSX
    {0x00000008, "readextattr", 0, 0},		// OSX
    {0x00000010, "writeextattr", 0, 0},		// OSX
+   {0x00000020, "execute", 0, 0},		// OSX
+   {0x00000020, "search_dir", 1, 0},		// OSX
+   {0x00000040, "delete_child", 1, 0},		// OSX
    {0x00000080, "readattr", 0, 0},		// OSX
    {0x00000100, "writeattr", 0, 0},		// OSX
+   {0x00010000, "delete", 0, 0},		// OSX
    {0x00020000, "readsecurity", 0, 0},		// OSX
    {0x00040000, "writesecurity", 0, 0},		// OSX
-   {0x00000002, "file_write", 0, 0},		// OneFS
-   {0x00000004, "append", 0, 0},		// OneFS
-   {0x00000008, "file_read_ext_attr", 0, 0},	// OneFS
-   {0x00000010, "file_write_ext_attr", 0, 0},	// OneFS
-   {0x00000020, "execute", 0, 0},		// OneFS
-   {0x00000040, "delete_child", 0, 0},		// OneFS
-   {0x00000080, "file_read_attr", 0, 0},	// OneFS
-   {0x00000100, "file_write_attr", 0, 0},	// OneFS
-   {0x00000001, "list", 1, 0},			// OneFS directory
-   {0x00000002, "add_file", 1, 0},		// OneFS directory
-   {0x00000004, "add_subdir", 1, 0},		// OneFS directory
-   {0x00000008, "dir_read_ext_attr", 1, 0},	// OneFS directory
-   {0x00000010, "dir_write_ext_attr", 1, 0},	// OneFS directory
-   {0x00000020, "traverse", 1, 0},		// OneFS directory
-   {0x00000040, "delete_child", 1, 0},		// OneFS directory
-   {0x00000080, "dir_read_attr", 1, 0},		// OneFS directory
-   {0x00000100, "dir_write_attr", 1, 0},	// OneFS directory
-   {0x001F01FF, "file_gen_all", 0, 0},		// OneFS
-   {0x001F01FF, "dir_gen_all", 1, 0},		// OneFS
-   {0x00120089, "file_gen_read", 0, 0},		// OneFS
-   {0x00120089, "dir_gen_read", 1, 0},		// OneFS
-   {0x00120116, "file_gen_write", 0, 0},	// OneFS
-   {0x00120116, "dir_gen_write", 1, 0},		// OneFS
-   {0x00120020, "file_gen_execute", 0, 0},	// OneFS
-   {0x00120020, "dir_gen_execute", 1, 0},	// OneFS
-   {0x000D0156, "modify", 0, 0},		// OneFS
-   {0x00000001, "object_inherit", 1, 1},	// OneFS inheritance
-   {0x00000002, "container_inherit", 1, 1},	// OneFS inheritance
-   {0x00000004, "no_prop_inherit", 1, 1},	// OneFS inheritance
-   {0x00000008, "inherit_only", 1, 1},		// OneFS inheritance
-   {0x00000080, "inherited_ace", 0, 1},		// OneFS inheritance
+   {0x00080000, "chown", 0, 0},			// OSX
+
+   {0x00000001, "file_inherit", 1, 1},		// OSX flags
+   {0x00000002, "directory_inherit", 1, 1},	// OSX
+   {0x00000004, "limit_inherit", 1, 1},		// OSX
+   {0x00000008, "only_inherit", 1, 1},		// OSX
+   {0x00000080, "inherited", 0, 1},		// OSX
+
+
    {0, NULL, 0, 0}
 };
 

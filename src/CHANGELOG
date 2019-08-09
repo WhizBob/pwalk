@@ -15,6 +15,7 @@
 //	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
 // ...
 // Version 2.07 - 2019/02 - New Features in-process
+//	- Option -since=<file> now implicitly enables -select
 //	- Added -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
 //	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)
 //	- Added tracking of largest inode number 'seen' and 'selected'

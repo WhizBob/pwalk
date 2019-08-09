@@ -325,7 +325,7 @@ onefs_ace(char *line)
       if (DEBUG) printf("Gobbled up 'inherited '\n");
    }
 
-   // Aggregate all BSD words into ace_mask and ace_flags values ...
+   // Aggregate all OneFS keywords into ace_mask and ace_flags values ...
    nwords = parse_commalist(tokbuf, pp, &nch);
    pp = tokbuf;
    for (i=0; i<nwords; i++) {
