@@ -51,6 +51,66 @@ ctime_extended(struct timespec *ts, char *ubuf)
    return rbuf;
 }
 
+void
+printf_st_flags(unsigned flags)
+{
+   int nflags = 0;
+#define DOCOMMA (++nflags == 1 ? "" : ",")
+
+   if (flags) {
+      printf(" (");
+#if defined(__LINUX__)
+#elif defined(__APPLE__)
+      if (flags & SF_ARCHIVED) printf("%sarchived", DOCOMMA);
+      if (flags & UF_OPAQUE) printf("%sopaque", DOCOMMA);
+      if (flags & UF_NODUMP) printf("%snodump", DOCOMMA);
+      if (flags & SF_APPEND) printf("%ssappend", DOCOMMA);
+      if (flags & UF_APPEND) printf("%suappend", DOCOMMA);
+      if (flags & SF_IMMUTABLE) printf("%ssimmutable", DOCOMMA);
+      if (flags & UF_IMMUTABLE) printf("%suimmutable", DOCOMMA);
+      if (flags & UF_HIDDEN) printf("%shidden", DOCOMMA);
+#elif defined(__ONEFS__)
+      // Mask values here snapshotted from 8.1.2 /usr/include/sys/stat.h ....
+      // #define SF_SETTABLE     0x0fff0000      // mask of root-changeable flags ...
+      if (flags & SF_BACKUP_DOM_SPARSE) printf("%sbackup_dom_sparse", DOCOMMA);		// 0x08000000
+      if (flags & SF_PARENTS_UPGRADED) printf("%sparents_upgraded", DOCOMMA);		// 0x04000000
+      if (flags & SF_HASNTFSOG) printf("%shasntfsog", DOCOMMA);				// 0x02000000
+      if (flags & SF_HASNTFSACL) printf("%shasntfsacl", DOCOMMA);			// 0x01000000
+      if (flags & SF_CACHED_STUB) printf("%scached_stub", DOCOMMA);			// 0x00800000
+      if (flags & SF_NOCOW) printf("%snocow", DOCOMMA);					// 0x00400000
+      if (flags & SF_SNAPSHOT) printf("%ssnapshot", DOCOMMA);				// 0x00200000
+      if (flags & SF_NOUNLINK) printf("%ssunlink", DOCOMMA);				// 0x00100000
+      if (flags & SF_FILE_STUBBED) printf("%sstubbed", DOCOMMA);			// 0x00080000
+      if (flags & SF_APPEND) printf("%ssappend", DOCOMMA);				// 0x00040000
+      if (flags & SF_IMMUTABLE) printf("%ssimmutable", DOCOMMA);			// 0x00020000
+      if (flags & SF_ARCHIVED) printf("%ssarchived", DOCOMMA);				// 0x00010000
+      // #define UF_SETTABLE	0xf000ffff	// mask of user-settable flags ...
+      if (flags & UF_DOS_SYSTEM) printf("%sdos_system", DOCOMMA);			// 0x80000000
+      if (flags & UF_DOS_RO) printf("%sdos_readonly", DOCOMMA);				// 0x40000000
+      if (flags & UF_DOS_HIDDEN) printf("%sdos_hidden", DOCOMMA);			// 0x20000000
+      if (flags & UF_DOS_ARCHIVE) printf("%sdos_archive", DOCOMMA);			// 0x10000000
+      if (flags & UF_DOS_OFFLINE) printf("%sdos_archive", DOCOMMA);			// 0x00008000
+      if (flags & UF_DOS_NOINDEX) printf("%sdos_noindex", DOCOMMA);			// 0x00000100
+      if (flags & UF_ISI_UNUSED1) printf("%sisi_unused1", DOCOMMA);			// 0x00004000
+      if (flags & UF_REPARSE) printf("%sreparse", DOCOMMA);				// 0x00002000
+      if (flags & UF_SPARSE) printf("%ssparse", DOCOMMA);				// 0x00001000
+      if (flags & UF_WC_ENDURANT) printf("%swc_endurant", DOCOMMA);			// 0x00000800
+      if (flags & UF_WC_INHERIT) printf("%swc_inherit", DOCOMMA);			// 0x00000080
+      if (flags & UF_HASADS) printf("%shasads", DOCOMMA);				// 0x00000400
+      if (flags & UF_ADS) printf("%sis_ads", DOCOMMA);					// 0x00000200
+      if (flags & UF_WRITECACHE) printf("%swritecache", DOCOMMA);			// 0x00000040
+      if (flags & UF_INHERIT) printf("%sinherit", DOCOMMA);				// 0x00000020
+      if (flags & UF_NOUNLINK) printf("%suunlink", DOCOMMA);				// 0x00000010
+      if (flags & UF_OPAQUE) printf("%sopaque", DOCOMMA);				// 0x00000008
+      if (flags & UF_APPEND) printf("%suappend", DOCOMMA);				// 0x00000004
+      if (flags & UF_IMMUTABLE) printf("%suimmutable", DOCOMMA);			// 0x00000002
+      if (flags & UF_NODUMP) printf("%snodump", DOCOMMA);				// 0x00000001
+#endif
+      printf(")");
+   }
+   printf("\n");
+}
+
 // NOTE: OSX stat() returns nanosecond-resolution timespec values (tv_sec, tv_nsec), while
 // utimes() on all *nix systems returns an array of two microsecond-resolution timeval values
 // (tv_sec, tv_usec). Modern Linux also offers utimensat() to SET ns-granular timestamps,
@@ -95,20 +155,22 @@ main(int argc, char *argv[])
       sprintf(st_gen_str, "%d", sb.st_gen);
       sprintf(st_flags_str, "0x%X", sb.st_flags);
 #endif
-      printf("%s:\n     st_dev=%d st_rdev=%d st_ino=%s st_gen=%s st_flags=%s\n     st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d\n     st_size=%lld st_blksize=%d st_blocks=%llu\n     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
-        filename,
-   	sb.st_dev,
-   	sb.st_rdev,
-   	onefs_inode_str(sb.st_ino),
-   	st_gen_str,
-   	st_flags_str,
-   	sb.st_mode,
-   	sb.st_nlink,
-   	sb.st_uid,
-   	sb.st_gid,
-   	sb.st_size,
-   	sb.st_blksize,
-   	sb.st_blocks,
+
+      // Output ...
+      printf("%s:\n", filename);
+      printf("     st_mode=%07o st_nlink=%d st_uid=%d st_gid=%d\n",
+                sb.st_mode, sb.st_nlink, sb.st_uid, sb.st_gid);
+      printf("     st_size=%lld st_blocks=%llu st_blksize=%d\n",
+                 sb.st_size, sb.st_blocks, sb.st_blksize);
+      printf("     st_dev=%d st_rdev=%d st_ino=%s st_gen=%s\n",
+		sb.st_dev, sb.st_rdev, onefs_inode_str(sb.st_ino), st_gen_str);
+      printf("     st_flags=%s", st_flags_str);
+#if defined(__LINUX__)
+      printf("\n");
+#else
+      printf_st_flags(sb.st_flags);
+#endif
+      printf("     st_atime=%21ld.%09lu (%016lX) %s\n     st_mtime=%21ld.%09lu (%016lX) %s\n     st_ctime=%21ld.%09lu (%016lX) %s\n st_birthtime=%21ld.%09lu (%016lX) %s\n",
 #if defined(__LINUX__)
    	sb.st_atim.tv_sec, sb.st_atim.tv_nsec, sb.st_atim.tv_sec, atime_str,
    	sb.st_mtim.tv_sec, sb.st_mtim.tv_nsec, sb.st_mtim.tv_sec, mtime_str,

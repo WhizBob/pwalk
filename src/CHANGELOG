@@ -14,9 +14,15 @@
 //	Make concurrency runtime-dynamic to allow variable impact
 //	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
 // ...
-// Version 2.07 - 2019/02 - New Features in-process
+// Version 2.08 - 2019/09 - New features
+//	- TODO: Always emit asccify'd directory and file names in primary outputs
+//	- TODO: Added -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
+//	- Added -select=[no]stubs (OneFS-only) which uses st_flags bit
+//	- Added -select_[atime|mtime|ctime|birth]=<ref_time>
+//	- -lsc now emits HEX inode numbers (for improved compactness ... with no initial "0x".)
+//	- mystat now emits sb.st_flags keywords for non-zero st_flags
+// Version 2.07 - 2019/02 - New features ...
 //	- Option -since=<file> now implicitly enables -select
-//	- Added -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
 //	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)
 //	- Added tracking of largest inode number 'seen' and 'selected'
 //	- Fixed -gz on OSX by using fflush() plus fclose() on pipes instead of pclose()
@@ -25,7 +31,7 @@
 //	- Re-structured thread management to solve hang-before-exit race conditions
 //	- Bugfix: all pwalk outputs now owned by pwalk's user rather than setuid/setgid identity
 // Version 2.06 - 2018/09 - 2019/01 - New Features in-process
-//	- Added "tolerate '\n' and other binary in FIFO pathnames"
+//	- Added "tolerate '\n' and other binary in FIFO pathnames" (asciify())
 //	- Bugfix; .err outputs now line-buffered (was erroneously full-buffered)
 //	- Default <directory> is now "." (relative to SOURCE) if none given on command line
 //	- Bugfix: "Hang on starting" - streamlined directory_scan() & eliminated WAKEUP mutex

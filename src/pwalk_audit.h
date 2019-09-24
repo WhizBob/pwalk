@@ -13,38 +13,38 @@
 void
 log_audit_keys(void)
 {
-   fprintf(Plog, "AUDIT: Column indexes for .audit output files ...\n");
-   fprintf(Plog, "AUDIT:	 1.  lock_domain_type - SmartLock domain type;\n");
-   fprintf(Plog, "AUDIT:	   'E' - Enterprise\n");
-   fprintf(Plog, "AUDIT:	   'C' - Compliance\n");
-   fprintf(Plog, "AUDIT:	   '-' - Neither\n");
-   fprintf(Plog, "AUDIT:	 2.  lock_status - SmartLock lock status;\n");
-   fprintf(Plog, "AUDIT:	   '-' - Not locked\n");
-   fprintf(Plog, "AUDIT:	   'C' - Committed	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "AUDIT:	   'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "AUDIT:	   'X' - eXpired	(READONLY, DELETABLE)\n");
-   fprintf(Plog, "AUDIT:	   'O' - Override	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "AUDIT:	 3.  w_ref_time - Reference time of worm status enquiry\n");
-   fprintf(Plog, "AUDIT:	 4.  st_atime\n");
-   fprintf(Plog, "AUDIT:	 5.  st_mtime\n");
-   fprintf(Plog, "AUDIT:	 6.  st_ctime\n");
-   fprintf(Plog, "AUDIT:	 7.  st_birthtime\n");
-   fprintf(Plog, "AUDIT:	 8.  w_ctime\n");
-   fprintf(Plog, "AUDIT:	 9.  w_retention_date\n");
-   fprintf(Plog, "AUDIT:	10.  eff_auto_date - Ephemeral AutoCommit date\n");
-   fprintf(Plog, "AUDIT:	11.  eff_retention_type - Basis of effective expiration date;\n");
-   fprintf(Plog, "AUDIT:	   '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
-   fprintf(Plog, "AUDIT:	   '!' - future (override)\n");
-   fprintf(Plog, "AUDIT:	   '<' - past (committed,past)\n");
-   fprintf(Plog, "AUDIT:	   '>' - future (committed,future)\n");
-   fprintf(Plog, "AUDIT:	   '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
-   fprintf(Plog, "AUDIT:	   '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
-   fprintf(Plog, "AUDIT:	   'E' - error unexpected case w/ persisted expiration!\n");
-   fprintf(Plog, "AUDIT:	12.  eff_retention_date - Effective expiration date\n");
-   fprintf(Plog, "AUDIT:	13.  st_uid\n");
-   fprintf(Plog, "AUDIT:	14.  st_size\n");
-   fprintf(Plog, "AUDIT:	15.  st_blocks\n");
-   fprintf(Plog, "AUDIT:	16.  \"<ifspath>\"\n");
+   fprintf(Plog, "@ Column indexes for .audit output files ...\n");
+   fprintf(Plog, "  1.  lock_domain_type - SmartLock domain type;\n");
+   fprintf(Plog, "    'E' - Enterprise\n");
+   fprintf(Plog, "    'C' - Compliance\n");
+   fprintf(Plog, "    '-' - Neither\n");
+   fprintf(Plog, "  2.  lock_status - SmartLock lock status;\n");
+   fprintf(Plog, "    '-' - Not locked\n");
+   fprintf(Plog, "    'C' - Committed	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "    'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "    'X' - eXpired	(READONLY, DELETABLE)\n");
+   fprintf(Plog, "    'O' - Override	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "  3.  w_ref_time - Reference time of worm status enquiry\n");
+   fprintf(Plog, "  4.  st_atime\n");
+   fprintf(Plog, "  5.  st_mtime\n");
+   fprintf(Plog, "  6.  st_ctime\n");
+   fprintf(Plog, "  7.  st_birthtime\n");
+   fprintf(Plog, "  8.  w_ctime\n");
+   fprintf(Plog, "  9.  w_retention_date\n");
+   fprintf(Plog, " 10.  eff_auto_date - Ephemeral AutoCommit date\n");
+   fprintf(Plog, " 11.  eff_retention_type - Basis of effective expiration date;\n");
+   fprintf(Plog, "    '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
+   fprintf(Plog, "    '!' - future (override)\n");
+   fprintf(Plog, "    '<' - past (committed,past)\n");
+   fprintf(Plog, "    '>' - future (committed,future)\n");
+   fprintf(Plog, "    '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
+   fprintf(Plog, "    '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
+   fprintf(Plog, "    'E' - error unexpected case w/ persisted expiration!\n");
+   fprintf(Plog, " 12.  eff_retention_date - Effective expiration date\n");
+   fprintf(Plog, " 13.  st_uid\n");
+   fprintf(Plog, " 14.  st_size\n");
+   fprintf(Plog, " 15.  st_blocks\n");
+   fprintf(Plog, " 16.  \"<ifspath>\"\n");
 }
 
 // Shell scripting hints for analyzing .audit files ...

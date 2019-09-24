@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.07--"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.08beta"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -253,15 +253,21 @@ static char *WACLS_CMD = NULL;  		// For +wacls= arg
 // For -cmp ...
 #define CMP_BUFFER_SIZE 128*1024		// -cmp buffer sizes
 
-// For -select (klooge: criteria are implictly OR'd for now) ...
-static time_t SELECT_T_SINCE = 0;		// mtime of -since=<file>
-static int SELECT_SINCE = 0;			// -since= specified
-static int SELECT_FAKE = 0;			// -select=fake specified
+// For selection-related options ...
 static int SELECT_ENABLED = 0;			// Any -select option(s) specified
-#define FAKE_UID_LO 1000000			// OneFS auto-gen range
-#define FAKE_UID_HI 4000000
-#define FAKE_GID_LO 1000000			// OneFS auto-gen range
-#define FAKE_GID_HI 4000000
+static int SELECT_FAKE = 0;			// -select=fake specified
+static uid_t FAKE_UID_LO = 1000000;		// OneFS auto-gen ranges ...
+static uid_t FAKE_UID_HI = 4000000;
+static gid_t FAKE_GID_LO = 1000000;
+static gid_t FAKE_GID_HI = 4000000;
+static int SELECT_STUBS = 0;			// -select=stubs specified
+static int SELECT_NOSTUBS = 0;			// -select=nostubs specified
+// For -since_*= ... <ref_time> is integer value or reference pathname ...
+static time_t SELECT_SINCE_TIME = 0;		// -since=<ref_time> (compared to mtime and ctime)
+static time_t SELECT_SINCE_ATIME = 0;		// -since_atime=<ref_time> 
+static time_t SELECT_SINCE_MTIME = 0;		// -since_mtime=<ref_time> 
+static time_t SELECT_SINCE_CTIME = 0;		// -since_ctime=<ref_time> 
+static time_t SELECT_SINCE_BIRTH = 0;		// -since_birth=<ref_time> 
 
 // Multipath variables ...
 #define MAXPATHS 64
@@ -530,31 +536,40 @@ usage(void)
    printf("	+wacls=<command>	// also ... write derived binary NFS4 ACLs to <command>\n");
    printf("	+xacls=[bin|nfs|chex]	// also ... create .acl4bin, .acl4nfs, .acl4chex outputs\n");
 #endif // PWALK_ACLS
-   printf("   <option> values are:\n");
+   printf("   Main <option> values are:\n");
    printf("	-dop=<n>		// specifies the Degree Of Parallelism (max number of workers)\n");
-   printf("	-pfile=<pfile>		// specify parameters for [source|target|output|select|csv]\n");
-#if defined(__ONEFS__)
-   printf("	-select[=fake]		// DEVELOPMENTAL: apply hardcoded selected() logic\n");
-#else
-   printf("	-select			// DEVELOPMENTAL: apply hardcoded selected() logic\n");
-#endif
-   printf("	-output=<output_dir>	// output directory; location for output directory (default is CWD)\n");
-   printf("	-source=<source_dir>	// source directory; must be absolute path (default is CWD)\n");
-   printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp!\n");
-   printf("	-bs=512			// interpret st_block_size units as 512 bytes rather than 1024\n");
-   printf("	-redact			// output hex inode #'s instead of names\n");
-   printf("	-since=<file>		// DEVELOPMENTAL: -select files having mtime or ctime > mtime(<file>)\n");
    printf("	-gz			// gzip primary output files\n");
    printf("	-dryrun			// suppress making any changes (with -fix_times & -rm)\n");
+   printf("	-pfile=<pfile>		// specify parameters for [source|target|output|select|csv]\n");
+
+   printf("	-output=<output_dir>	// output directory location; (default is $CWD)\n");
+   printf("	-source=<source_dir>	// source directory; must be absolute path (default is CWD)\n");
+   printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp!\n");
+   printf("	-v			// verbose; verbosity increased by each 'v'\n");
+   printf("	-d			// debug; verbosity increased by each 'd'\n");
+   printf("   Miscellaneous <option> values are:\n");
+   printf("	-bs=512			// interpret st_block_size units as 512 bytes rather than 1024\n");
+   printf("	-redact			// output hex inode #'s instead of names\n");
    printf("	-pmode			// suppress showing formatted mode bits (with -ls and -xml)\n");
    printf("	+acls			// show ACL info in some outputs, eg: '+' with -ls\n");
    printf("	+crc			// show CRC for each file (READS ALL FILES!)\n");
    printf("	+md5  (COMING SOON!)	// show MD5 for each file (READS ALL FILES!)\n");
    printf("	+tstat			// show hi-res timing statistics in some outputs\n");
+   printf("   File selection <option> values are:	(<ref_time> is <epoch_time> | ?time(<ref_file>)\n");
+   printf("	-select			// select files with hardcoded selection criteria\n");
+#if defined(__ONEFS__)
+   // printf("	-select=fake		// select files with persisted fake IDs (OneFS)\n");
+   printf("	-select=[no]stubs	// select files with or without stubs (OneFS)\n");
+#endif
+   printf("	-since=<ref_time>	// select files with mtime or ctime > mtime(<ref_time>)\n");
+   printf("	-since_atime=<ref_time>	// select files with atime > atime(<ref_time>)\n");
+   printf("	-since_mtime=<ref_time>	// select files with mtime > mtime(<ref_time>)\n");
+   printf("	-since_ctime=<ref_time>	// select files with ctime > ctime(<ref_time>)\n");
+#if defined(__ONEFS__) || defined(__APPLE__)
+   printf("	-since_birth=<ref_time>	// select files with birthtime > birthtime(<ref_time>)\n");
+#endif
    printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("	+span			// include directories that span filesystems (OFF by default)\n");
-   printf("	-v			// verbose; verbosity increased by each 'v'\n");
-   printf("	-d			// debug; verbosity increased by each 'd'\n");
    exit(-1);
 }
 
@@ -723,7 +738,7 @@ close_all_outputs(void)
 
 // abend() - Rude, abrupt exit.
 
-// THIS ws not as useful as I had hoped ...
+// THIS was not as useful as I had hoped ...
 //	   void* callstack[512];
 //	#if defined(__OSX__)
 //	   backtrace_symbols_fd(callstack, 512, fileno(stderr));
@@ -1052,7 +1067,7 @@ init_main_outputs(void)
    setvbuf(Plog, NULL, _IOFBF, 8192);
 
    // Start being chatty (we should use LogMsg() henceforth) ...
-   sprintf(msg, "NOTICE: +++ %s Begins +++\n", PWALK_VERSION);
+   sprintf(msg, "@ %s BEGINS\n", PWALK_VERSION);
    LogMsg(msg, 1);
 
    // Create ${OUTPUT_DIR}/${PROGNAME}.fifo as file-based FIFO, with distinct push and pop streams ...
@@ -2176,51 +2191,45 @@ selected(char *filename, struct stat *sb)
       // regexp() example ...
    }
 
-   // Include only files changed (ctime or mtime) since mtime of -since=<file> ...
-   if (SELECT_SINCE) {
-       if ((sb->st_ctimespec.tv_sec > SELECT_T_SINCE) || (sb->st_mtimespec.tv_sec > SELECT_T_SINCE))
-          return (1);
-   }
+   // Timestamp-based selections ...
+   if (SELECT_SINCE_TIME &&
+       ((sb->st_ctimespec.tv_sec > SELECT_SINCE_TIME) ||
+        (sb->st_mtimespec.tv_sec > SELECT_SINCE_TIME))) return (1);
+   if (SELECT_SINCE_ATIME && (sb->st_atimespec.tv_sec > SELECT_SINCE_ATIME)) return (1);
+   if (SELECT_SINCE_MTIME && (sb->st_mtimespec.tv_sec > SELECT_SINCE_MTIME)) return (1);
+   if (SELECT_SINCE_CTIME && (sb->st_ctimespec.tv_sec > SELECT_SINCE_CTIME)) return (1);
+#if defined(__ONEFS__) || defined(__APPLE__)
+   if (SELECT_SINCE_BIRTH && (sb->st_birthtimespec.tv_sec > SELECT_SINCE_BIRTH)) return (1);
+#endif
 
 #if defined(__ONEFS__)
    if (SELECT_FAKE) {
       // Get SD ...
-xxxxx(&od_own_is_uid, &od_grp_is_gid
+// xxxxx(&od_own_is_uid, &od_grp_is_gid
       // If 
-      if ((st_uid >=  FAKE_UID_LO && st_uid <= FAKE_UID_HI) ||
-          (st_gid >=  FAKE_GID_LO && st_gid <= FAKE_GID_HI))
-#define FAKE_UID_LO 1000000
-#define FAKE_UID_HI 4000000
-#define FAKE_GID_LO 1000000
-#define FAKE_GID_HI 4000000
+      if ((sb->st_uid >=  FAKE_UID_LO && sb->st_uid <= FAKE_UID_HI) ||
+          (sb->st_gid >=  FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI))
 
+      ;
    }
+   if (SELECT_STUBS && (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
+   if (SELECT_NOSTUBS && !(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
 #endif
 
    // Default is to exclude ...
    return (0);
 }
 
-// @@@ SECTION: ascii_fy & de_ascii_fy @@@
-// klooge: FUTURE
-
-// @@@ SECTION: FIFO management @@@
+// @@@ SECTION: asciify & de_asciify @@@
 
-// FIFO logic must be re-entrant because multiple workers may be trying to push newly-discovered
-// directory paths at the same time.  FIFO access is serialized by MP_mutex. These push and pop
-// routines are atomic as far as the rest of the program logic is concerned; so the depth of the
-// FIFO is never ambiguous for even an instant.
-
-// fifo_push() - Push passed directory path onto file-based FIFO (pwalk.fifo).
+// asciify() - copy string, asccify-ing it.  WARNING: out_str[] should be 8192 bytes! (klooge)
 
 void
-fifo_push(char *pathname, struct stat *sb, int w_id)
+asciify(char *istr, char *ostr)
 {
-   char ascii_path[8192];
    char *pi, *po;
-   int nw_busy;
 
-   // ASCII-fy: Pathnames might be in a non-ASCII character set, so for file and pathnames
+   // ASCII-fy: strings might be in a non-ASCII character set, so for file and pathnames
    // that must be externally represented (in pwalk.fifo or other pwalk outputs), we make
    // an 'ASCII-fied' copy. Readers of these values, such as fifo_pop(), must reverse this
    // transformation.
@@ -2247,7 +2256,7 @@ fifo_push(char *pathname, struct stat *sb, int w_id)
    //
    // NOTE: (Table derived from: https://en.wikipedia.org/wiki/Escape_sequences_in_C)
    // 
-   for (pi=pathname, po=ascii_path; *pi; pi++) {
+   for (pi=istr, po=ostr; *pi; pi++) {
       if (isgraph(*pi)) {
          if (*pi == '\'' || *pi == '"' || *pi == '?' || *pi == '\\') *po++ = '\\';
          *po++ = *pi;
@@ -2261,13 +2270,32 @@ fifo_push(char *pathname, struct stat *sb, int w_id)
             *po++ = "0123456789abcdef"[(*pi & 0xf)];
          }
       }
-      assert (po < ascii_path+8100);
+      assert (po < ostr+8100);
    }
    *po = NUL;
+}
+
+// @@@ SECTION: FIFO management @@@
+
+// FIFO logic must be re-entrant because multiple workers may be trying to push newly-discovered
+// directory paths at the same time.  FIFO access is serialized by MP_mutex. These push and pop
+// routines are atomic as far as the rest of the program logic is concerned; so the depth of the
+// FIFO is never ambiguous for even an instant.
+
+// fifo_push() - Push passed directory path onto file-based FIFO (pwalk.fifo).
+
+void
+fifo_push(char *pathname, struct stat *sb, int w_id)
+{
+   char ascii_path[8192];
+   int nw_busy;
 
    // We usually skip .snapshot and .isi-compliance directories entirely ...
    if (skip_this_directory(pathname, sb, w_id))
       return;
+
+   // Make sure pushed path is ASCII ...
+   asciify(pathname, ascii_path);
 
    // Here's the PUSH and associated coherent accounting ...
    MP_LOCK("fifo_push()");					// +++ MP lock +++
@@ -3183,7 +3211,7 @@ dirent_outputs: // @@@
       } else if (Cmd_LSC) {		// -lsc
          if (!S_ISDIR(dirent_sb.st_mode)) {
             if (Opt_REDACT) fprintf(WLOG, "%c %s\n", mode_str[0], REDACT_FileName);
-            else            fprintf(WLOG, "%c %llu %s\n", mode_str[0], dirent_sb.st_ino, FileName);
+            else            fprintf(WLOG, "%c %llx %s\n", mode_str[0], dirent_sb.st_ino, FileName);
          }
       } else if (Cmd_XML) {		// -xml
          fprintf(WLOG, "<file> %s %u %lld %s%s%s </file>\n",
@@ -3368,17 +3396,48 @@ arg_count_ch(char *arg, char ch)
 
 // @@@ SECTION: Command-line argument processing @@@
 
-// get_since_time() - Process -since=<path> argument ...
-// klooge: This is a temporary hack to get a parameter into selected().
+// get_since_time() - Process -since[_*]=<ref_time> argument ...
 
 void
-get_since_time(char *pathname)
+get_since_time(char *option)
 {
    struct stat sb;
-   int rc;
+   char *p_arg, *endptr;
+   time_t epoch_time;
+   int rc, badarg = 0;
 
-   assert(stat(pathname, &sb) == 0);		// klooge: crude
-   SELECT_T_SINCE = sb.st_mtimespec.tv_sec;
+   if ((p_arg = strchr(option, '=')) == NULL) {	// must have '='!
+      badarg = 1;
+   } else {
+      p_arg++;
+      epoch_time = strtol(p_arg, &endptr, 0);
+      if (endptr != p_arg && *endptr == '\0') {	// if value is an integer, treat as reference time_t ...
+         if (epoch_time == 0) {
+            badarg = 1;
+         } else {
+            sb.st_atimespec.tv_sec = epoch_time;
+            sb.st_mtimespec.tv_sec = epoch_time;
+            sb.st_ctimespec.tv_sec = epoch_time;
+            sb.st_birthtimespec.tv_sec = epoch_time;
+         }
+      } else if ((rc = stat(p_arg, &sb))) {	// otherwise, assume value is a reference file ...
+         badarg = 1;
+      }
+   }
+   
+   if (!badarg) {
+      if (strncmp(option, "-since=", 7) == 0) SELECT_SINCE_TIME = sb.st_mtimespec.tv_sec;
+      else if (strncmp(option, "-since_atime=", 13) == 0) SELECT_SINCE_ATIME = sb.st_atimespec.tv_sec;
+      else if (strncmp(option, "-since_mtime=", 13) == 0) SELECT_SINCE_MTIME = sb.st_mtimespec.tv_sec;
+      else if (strncmp(option, "-since_ctime=", 13) == 0) SELECT_SINCE_CTIME = sb.st_ctimespec.tv_sec;
+      else if (strncmp(option, "-since_birth=", 13) == 0) SELECT_SINCE_BIRTH = sb.st_birthtimespec.tv_sec;
+      else badarg = 1;
+   }
+
+   if (badarg) {
+      fprintf(stderr, "ERROR: \"%s\" is invalid!\n", option);
+      exit(-1);
+   }
 }
 
 // process_arglist() - Process command-line options w/ rudimentary error-checking.
@@ -3470,21 +3529,6 @@ process_arglist(int argc, char *argv[])
          P_ACL_P = TRUE;
       } else if (strcmp(arg, "+crc") == 0) {		// Tag-along modes ...
          P_CRC32 = 1;
-      } else if (strcmp(arg, "-select") == 0) {		// klooge: hard-coded -select criteria
-         SELECT_ENABLED = 1;
-#if defined(__ONEFS__)
-      } else if (strcmp(arg, "-select=fake") == 0) {	// Only on OneFS native!
-         SELECT_ENABLED = 1;
-         SELECT_FAKE = 1;
-#endif // __ONEFS__
-      } else if (strncmp(arg, "-since=", 7) == 0) {	// klooge: for INTERIM selected() logic
-         SELECT_ENABLED = 1;	// implicit
-         SELECT_SINCE = 1;
-         get_since_time(arg+7);
-      } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
-         Opt_SKIPSNAPS = 0;
-      } else if (strcmp(arg, "+span") == 0) {		// include dirs that cross filesystems
-         Opt_SPAN = 1;
       } else if (strcmp(arg, "+tstat") == 0) {		// also add timed stats
          Opt_TSTAT = 1;
       } else if (strcmp(arg, "-gz") == 0) {
@@ -3511,6 +3555,25 @@ process_arglist(int argc, char *argv[])
          } 
          PWdebug += nc;
          fprintf(stderr, "DEBUG: PWdebug=%d\n", PWdebug);
+      // Selection-related <option> values ...
+      } else if (strcmp(arg, "-select") == 0) {		// Hard-coded -select criteria (klooge)
+         SELECT_ENABLED = 1;
+#if defined(__ONEFS__)					// Only on OneFS native!
+      //} else if (strcmp(arg, "-select=fake") == 0) {
+      //   SELECT_ENABLED = 1; SELECT_FAKE = 1;
+      } else if (strcmp(arg, "-select=stub") == 0) {
+         SELECT_ENABLED = 1; SELECT_STUBS = 1;
+      } else if (strcmp(arg, "-select=nostub") == 0) {
+         SELECT_ENABLED = 1; SELECT_NOSTUBS = 1;
+#endif // __ONEFS__
+      } else if (strncmp(arg, "-since", 6) == 0) {	// -since[_*]= ...
+         get_since_time(arg);				// Do or die!
+         SELECT_ENABLED = 1;
+      // Other selection-related <option> values ...
+      } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
+         Opt_SKIPSNAPS = 0;
+      } else if (strcmp(arg, "+span") == 0) {		// include dirs that cross filesystems
+         Opt_SPAN = 1;
       } else if (*arg == '-' || *arg == '+') {		// Unknown +/- option ...
          fprintf(stderr, "ERROR: \"%s\" option unknown!\n", arg);
          exit(-1);
@@ -3733,43 +3796,43 @@ main(int argc, char *argv[])
    // NOTE: After this, errors all go to Plog rather than stderr ...
    init_main_outputs();
 
-   fprintf(Plog, "NOTICE: --- Arguments ---\n");
-
-   // Log command-line recap ...
-   fprintf(Plog, "NOTICE: cmd =");
+   fprintf(Plog, " cmd =");
    for (i=0; i<argc; i++) fprintf(Plog, " %s", argv[i]);
    fprintf(Plog, "\n");
+   fprintf(Plog, " cwd = %s\n", CWD);
 
-   // Log operational context ...
-   fprintf(Plog, "NOTICE: cwd = %s\n", CWD);
-   fprintf(Plog, "NOTICE: output = %s\n", OUTPUT_DIR);
+   fprintf(Plog, "@ Argument recap ...\n");
+   fprintf(Plog, " output = %s\n", OUTPUT_DIR);
 
    for (i=0; i<N_SOURCE_PATHS; i++)
-      fprintf(Plog, "NOTICE: source[%d] = %s\n", i, SOURCE_PATHS[i]);
+      fprintf(Plog, " source[%d] = %s\n", i, SOURCE_PATHS[i]);
    for (i=0; i<N_TARGET_PATHS; i++)
-      fprintf(Plog, "NOTICE: target[%d] = %s\n", i, TARGET_PATHS[i]);
+      fprintf(Plog, " target[%d] = %s\n", i, TARGET_PATHS[i]);
 
-   if (SELECT_ENABLED && SELECT_T_SINCE != 0)	// NOTE: ctime() provides the '\n' here ...
-      fprintf(Plog, "NOTICE: -select -since = %s", ctime(&SELECT_T_SINCE));
+   if (SELECT_SINCE_TIME) fprintf(Plog, " -since = %s", ctime(&SELECT_SINCE_TIME));
+   if (SELECT_SINCE_ATIME) fprintf(Plog, " -since_atime = %s", ctime(&SELECT_SINCE_ATIME));
+   if (SELECT_SINCE_MTIME) fprintf(Plog, " -since_mtime = %s", ctime(&SELECT_SINCE_MTIME));
+   if (SELECT_SINCE_CTIME) fprintf(Plog, " -since_ctime = %s", ctime(&SELECT_SINCE_CTIME));
+   if (SELECT_SINCE_BIRTH) fprintf(Plog, " -since_birth = %s", ctime(&SELECT_SINCE_BIRTH));
 
-   fprintf(Plog, "NOTICE: --- Platform ---\n");
+   fprintf(Plog, "@ Platform recap ...\n");
    (void) uname(&uts);
-   fprintf(Plog, "NOTICE: uts.nodename = %s\n", uts.nodename);
-   fprintf(Plog, "NOTICE: uts.sysname  = %s\n", uts.sysname);
-   fprintf(Plog, "NOTICE: uts.release  = %s\n", uts.release);
-   fprintf(Plog, "NOTICE: uts.version  = %s\n", uts.version);
-   fprintf(Plog, "NOTICE: uts.machine  = %s\n", uts.machine);
+   fprintf(Plog, " uts.nodename = %s\n", uts.nodename);
+   fprintf(Plog, " uts.sysname  = %s\n", uts.sysname);
+   fprintf(Plog, " uts.release  = %s\n", uts.release);
+   fprintf(Plog, " uts.version  = %s\n", uts.version);
+   fprintf(Plog, " uts.machine  = %s\n", uts.machine);
 
-   fprintf(Plog, "NOTICE: --- Process ---\n");
-   fprintf(Plog, "NOTICE: pid = %d\n", getpid());
-   fprintf(Plog, "NOTICE: MAX_OPEN_FILES = %d\n", MAX_OPEN_FILES);
+   fprintf(Plog, "@ Process recap ...\n");
+   fprintf(Plog, "            pid = %d\n", getpid());
+   fprintf(Plog, " MAX_OPEN_FILES = %d\n", MAX_OPEN_FILES);
    assert (getrlimit(RLIMIT_NOFILE, &rlimit) == 0);
-   fprintf(Plog, "NOTICE: RLIMIT_NOFILES = %llu\n", rlimit.rlim_cur);
+   fprintf(Plog, " RLIMIT_NOFILES = %llu\n", rlimit.rlim_cur);
    // OSX uses 0x7fffffffffffffff and Linux uses 0xffffffffffffffff - for 'unlimited'
    assert (getrlimit(RLIMIT_CORE, &rlimit) == 0);
    sprintf(s64, "%llu", rlimit.rlim_cur);
    str = (rlimit.rlim_cur >= 0x7fffffffffffffff) ? "unlimited" : s64;
-   fprintf(Plog, "NOTICE: RLIMIT_CORE    = %s\n", str);
+   fprintf(Plog, "   RLIMIT_CORE  = %s\n", str);
 
    // Push initial command-line <directory> args to FIFO ...
    for (i=1; i < argc; i++)
@@ -3805,9 +3868,9 @@ main(int argc, char *argv[])
 
    // ------------------------------------------------------------------------
 
-   // Force flush Plog. HENCEFORTH, FURTHER Plog WRITES CAN JUST fprintf(Plog ...) ...
+   // Force flush Plog. HENCEFORTH, Further Plog writes *CAN* simply fprintf(Plog ...) ...
    LogMsg(NULL, 1);
-   fprintf(Plog, "NOTICE: +++ %s Ends +++\n", PWALK_VERSION);
+   fprintf(Plog, "@ %s ENDS ...\n", PWALK_VERSION);
 
    // @@@ Aggregate per-worker-stats (WS[w_id]) to program's global-stats (GS) (lockless) ...
    // ... regardless of whether or not the statistic was actually accumulated by the workers.
@@ -3884,101 +3947,93 @@ main(int argc, char *argv[])
    //             long ru_nivcsw;          /* involuntary context switches */
    //     };
 
-   fprintf(Plog, "NOTICE: Summary process stats ...\n");
-   fprintf(Plog, "NOTICE: %16ld - max resident set size (KB)\n", p_usage.ru_maxrss/1024);
+   fprintf(Plog, "%16ld - max resident set size (KB)\n", p_usage.ru_maxrss/1024);
 #ifdef SOLARIS
-   fprintf(Plog, "NOTICE: %16ld - integral resident set size\n", p_usage.ru_idrss);
+   fprintf(Plog, "%16ld - integral resident set size\n", p_usage.ru_idrss);
 #else
-   fprintf(Plog, "NOTICE: %16ld - integral shared text memory size\n", p_usage.ru_ixrss);
-   fprintf(Plog, "NOTICE: %16ld - integral unshared data size\n", p_usage.ru_idrss);
-   fprintf(Plog, "NOTICE: %16ld - integral unshared stack size\n", p_usage.ru_isrss);
+   fprintf(Plog, "%16ld - integral shared text memory size\n", p_usage.ru_ixrss);
+   fprintf(Plog, "%16ld - integral unshared data size\n", p_usage.ru_idrss);
+   fprintf(Plog, "%16ld - integral unshared stack size\n", p_usage.ru_isrss);
 #endif
-   fprintf(Plog, "NOTICE: %16ld - page reclaims\n", p_usage.ru_minflt);
-   fprintf(Plog, "NOTICE: %16ld - page faults\n", p_usage.ru_majflt);
-   fprintf(Plog, "NOTICE: %16ld - swaps\n", p_usage.ru_nswap);
-   fprintf(Plog, "NOTICE: %16ld - block input operations\n", p_usage.ru_inblock);
-   fprintf(Plog, "NOTICE: %16ld - block output operations\n", p_usage.ru_oublock);
-   fprintf(Plog, "NOTICE: %16ld - messages sent\n", p_usage.ru_msgsnd);
-   fprintf(Plog, "NOTICE: %16ld - messages received\n", p_usage.ru_msgrcv);
-   fprintf(Plog, "NOTICE: %16ld - signals received\n", p_usage.ru_nsignals);
-   fprintf(Plog, "NOTICE: %16ld - voluntary context switches\n", p_usage.ru_nvcsw);
-   fprintf(Plog, "NOTICE: %16ld - involuntary context switches\n", p_usage.ru_nivcsw);
+   fprintf(Plog, "%16ld - page reclaims\n", p_usage.ru_minflt);
+   fprintf(Plog, "%16ld - page faults\n", p_usage.ru_majflt);
+   fprintf(Plog, "%16ld - swaps\n", p_usage.ru_nswap);
+   fprintf(Plog, "%16ld - block input operations\n", p_usage.ru_inblock);
+   fprintf(Plog, "%16ld - block output operations\n", p_usage.ru_oublock);
+   fprintf(Plog, "%16ld - messages sent\n", p_usage.ru_msgsnd);
+   fprintf(Plog, "%16ld - messages received\n", p_usage.ru_msgrcv);
+   fprintf(Plog, "%16ld - signals received\n", p_usage.ru_nsignals);
+   fprintf(Plog, "%16ld - voluntary context switches\n", p_usage.ru_nvcsw);
+   fprintf(Plog, "%16ld - involuntary context switches\n", p_usage.ru_nivcsw);
 
-   // @@@ ... Summary pwalk stats ...
-   fprintf(Plog, "NOTICE: Summary pwalk stats ...\n");
-   fprintf(Plog, "NOTICE: %16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
-   fprintf(Plog, "NOTICE: %16llu - pop%s\n", FIFO_POPS, (FIFO_POPS != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
+   fprintf(Plog, "@ Summary pwalk stats ...\n");
+   fprintf(Plog, "%16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
+   fprintf(Plog, "%16llu - pop%s\n", FIFO_POPS, (FIFO_POPS != 1) ? "s" : "");
+   fprintf(Plog, "%16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
    if (GS.NPythonCalls > 0) 
-      fprintf(Plog, "NOTICE: %16llu - Python call%s from -audit\n",
+      fprintf(Plog, "%16llu - Python call%s from -audit\n",
          GS.NPythonCalls, (GS.NPythonCalls != 1) ? "s" : "");
-
-   // @@@ ... Summary treewalk stats ...
-   fprintf(Plog, "NOTICE: Summary file stats ...\n");
-
    // @@@ ... Results of -rm operations ...
    if (Cmd_RM)
-      fprintf(Plog, "NOTICE: %16llu - file%s removed by -rm\n", GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
+      fprintf(Plog, "%16llu - file%s removed by -rm\n", GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
 
    // @@@ ... Grand total of stat(2)-based stats ...
    // NStatCalls should equal (NOpendirs + NFiles + NSymlinks + NOthers + NStatErrors) ...
-   fprintf(Plog, "NOTICE: %16llu - stat() call%s in readdir_r loops\n", GS.NStatCalls, (GS.NStatCalls != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu -> stat() error%s\n", GS.NStatErrors, (GS.NStatErrors != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
-   fprintf(Plog, "NOTICE: %16llu -> file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu -> symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu -> other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
-   fprintf(Plog, "NOTICE: %16llu - byte%s allocated (%4.2f GB)\n",
+   fprintf(Plog, "%16llu - stat() call%s in readdir_r loops\n", GS.NStatCalls, (GS.NStatCalls != 1) ? "s" : "");
+   fprintf(Plog, "%16llu -> stat() error%s\n", GS.NStatErrors, (GS.NStatErrors != 1) ? "s" : "");
+   fprintf(Plog, "%16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
+   fprintf(Plog, "%16llu -> file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
+   fprintf(Plog, "%16llu -> symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
+   fprintf(Plog, "%16llu -> other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
+   fprintf(Plog, "%16llu - byte%s allocated (%4.2f GB)\n",
       GS.NBytesAllocated, (GS.NBytesAllocated != 1) ? "s" : "", GS.NBytesAllocated / 1000000000.);
-   fprintf(Plog, "NOTICE: %16llu - byte%s nominal (%4.2f GB)\n",
+   fprintf(Plog, "%16llu - byte%s nominal (%4.2f GB)\n",
       GS.NBytesNominal, (GS.NBytesNominal != 1) ? "s" : "", GS.NBytesNominal / 1000000000.);
    if (GS.NBytesNominal > 0) {	// protect divide ...
-      fprintf(Plog, "NOTICE: %15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
+      fprintf(Plog, "%15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
          ((GS.NBytesAllocated - GS.NBytesNominal)*100.)/GS.NBytesNominal);
    }
-   fprintf(Plog, "NOTICE: %16llu - zero-length file%s\n", GS.NZeroFiles, (GS.NZeroFiles != 1) ? "s" : "");
+   fprintf(Plog, "%16llu - zero-length file%s\n", GS.NZeroFiles, (GS.NZeroFiles != 1) ? "s" : "");
 
    // @@@ Hard link accounting ...
    if (GS.NHardLinkFiles) {
-      fprintf(Plog, "NOTICE: %16llu - files with hard link count > 1\n", GS.NHardLinkFiles);
-      fprintf(Plog, "NOTICE: %16llu - sum of hard links > 1\n", GS.NHardLinks);
+      fprintf(Plog, "%16llu - files with hard link count > 1\n", GS.NHardLinkFiles);
+      fprintf(Plog, "%16llu - sum of hard links > 1\n", GS.NHardLinks);
    }
+
+   // @@@ Cheap-to-keep GS counters ...
+   fprintf(Plog, "%16llx - MAX inode value seen\n", GS.MAX_inode_Value_Seen);
+   fprintf(Plog, "%16llx - MAX inode value selected()\n", GS.MAX_inode_Value_Selected);
 
    // @@@ ... Show  ACL-related stats ...
    if (Cmd_XACLS || Cmd_WACLS || Cmd_RM_ACLS || P_ACL_P) {
-      fprintf(Plog, "NOTICE: %16llu - ACL%s found\n", GS.NACLs, (GS.NACLs != 1) ? "s" : "");
+      fprintf(Plog, "%16llu - ACL%s found\n", GS.NACLs, (GS.NACLs != 1) ? "s" : "");
    }
 
    // @@@ ... Show +crc, md5, and +denist stats ...
    if (Cmd_DENIST || P_CRC32 || P_MD5 || Cmd_RM_ACLS) {
-      fprintf(Plog, "NOTICE: Summary (READONLY) file data stats ...\n");
-      fprintf(Plog, "NOTICE: %16llu - zero-length file%s\n", GS.READONLY_Zero_Files, (GS.READONLY_Zero_Files != 1) ? "s" : "");
-      fprintf(Plog, "NOTICE: %16llu - open() call%s\n", GS.READONLY_Opens, (GS.READONLY_Opens != 1) ? "s" : "");
-      fprintf(Plog, "NOTICE: %16llu - open() or read() error%s\n", GS.READONLY_Errors, (GS.READONLY_Errors != 1) ? "s" : "");
+      fprintf(Plog, "@ Summary (READONLY) file stats ...\n");
+      fprintf(Plog, "%16llu - zero-length file%s\n", GS.READONLY_Zero_Files, (GS.READONLY_Zero_Files != 1) ? "s" : "");
+      fprintf(Plog, "%16llu - open() call%s\n", GS.READONLY_Opens, (GS.READONLY_Opens != 1) ? "s" : "");
+      fprintf(Plog, "%16llu - open() or read() error%s\n", GS.READONLY_Errors, (GS.READONLY_Errors != 1) ? "s" : "");
       if (P_CRC32)
-         fprintf(Plog, "NOTICE: %16llu - CRC byte%s read\n", GS.READONLY_CRC_Bytes, (GS.READONLY_CRC_Bytes != 1) ? "s" : "");
+         fprintf(Plog, "%16llu - CRC byte%s read\n", GS.READONLY_CRC_Bytes, (GS.READONLY_CRC_Bytes != 1) ? "s" : "");
       if (Cmd_DENIST)
-         fprintf(Plog, "NOTICE: %16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
+         fprintf(Plog, "%16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
    }
 
-   // @@@ Cheap-to-keep GS counters ...
-   fprintf(Plog, "NOTICE: %16llu - MAX inode value seen\n", GS.MAX_inode_Value_Seen);
-   fprintf(Plog, "NOTICE: %16llu - MAX inode value selected()\n", GS.MAX_inode_Value_Selected);
-
-   // @@@ ... Command line recap ...
-   fprintf(Plog, "NOTICE: cmd =");
+   fprintf(Plog, "@ Summary - bottom-line ...\n");
+   fprintf(Plog, "cmd =");
    for (i=0; i<argc; i++) fprintf(Plog, " %s", argv[i]);
    fprintf(Plog, "\n");
-
    // @@@ ... CPU usage ...
    (void) times(&cpu_usage);
-   fprintf(Plog, "NOTICE: %5.3fs usr, %5.3fs sys cpu\n",
+   fprintf(Plog, "%5.3fs usr, %5.3fs sys cpu\n",
            ((cpu_usage.tms_utime + cpu_usage.tms_cutime) / (double) CLK_TCK),
            ((cpu_usage.tms_stime + cpu_usage.tms_cstime) / (double) CLK_TCK) );
-
    // @@@ ... Elapsed time ...
    t_elapsed_sec = (T_FINISH_hires - T_START_hires) / 1000000000.; // convert nanoseconds to seconds
-   fprintf(Plog, "NOTICE: %llu files, %s elapsed, %3.0f files/sec\n",
+   fprintf(Plog, "%llu files, %s elapsed, %3.0f files/sec\n",
       GS.NFiles+GS.NDirs+GS.NOthers,
       format_ns_delta_t(ebuf, T_START_hires, T_FINISH_hires),
       (t_elapsed_sec > 0.) ? ((GS.NFiles+GS.NDirs+GS.NOthers)/(t_elapsed_sec)) : 0.);

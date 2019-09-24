@@ -26,7 +26,7 @@ chexcmp: chexcmp.c
 	$(CC)	chexcmp.c -o $(BINDIR)/chexcmp
 
 mystat: mystat.c
-	$(CC)	mystat.c -o $(BINDIR)/mystat
+	$(CC)   mystat.c -D__ONEFS__ -o $(BINDIR)/mystat
 
 touch3: touch3.c
 	$(CC)	touch3.c -o $(BINDIR)/touch3
