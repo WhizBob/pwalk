@@ -3561,9 +3561,9 @@ process_arglist(int argc, char *argv[])
 #if defined(__ONEFS__)					// Only on OneFS native!
       //} else if (strcmp(arg, "-select=fake") == 0) {
       //   SELECT_ENABLED = 1; SELECT_FAKE = 1;
-      } else if (strcmp(arg, "-select=stub") == 0) {
+      } else if (strcmp(arg, "-select=stubs") == 0) {
          SELECT_ENABLED = 1; SELECT_STUBS = 1;
-      } else if (strcmp(arg, "-select=nostub") == 0) {
+      } else if (strcmp(arg, "-select=nostubs") == 0) {
          SELECT_ENABLED = 1; SELECT_NOSTUBS = 1;
 #endif // __ONEFS__
       } else if (strncmp(arg, "-since", 6) == 0) {	// -since[_*]= ...
