@@ -1,184 +1,185 @@
-// Version.FUTURE [ DEVELOPMENTAL TO-DO ]
-//	SOMEHOW: Do something to avoid multiple-processing of hard-linked inodes
-//	$$$$ Add find(1)-like selection predicates and actions
-//	$$ Add pclt2 metadata items on OneFS
-//		... Add ifs.file_pool metadata (OneFS only)
-//		... Remove pwalk_python.py dependency for -audit
-//	Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
-//	Add external parameterization for -csv[=<list>] and [csv] pfile section (report column keys)
-//		Inspired by: ps '-o' option (inode,asize,mode,nlink,nsize,name)
-//	Add external parameterization for -select in [tally] pfile section (file selection criteria)
-//	Add external parameterization for +tally in [tally] section of parameter file
-//	Add MD5 checksum features to -cmp mode
-//	Add external parameters for -csv mode (the next most-likely project)
-//	Make concurrency runtime-dynamic to allow variable impact
-//	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
-// ...
-// Version 2.08 - 2019/09 - New features
-//	- TODO: Always emit asccify'd directory and file names in primary outputs
-//	- TODO: Added -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
-//	- Added -select=[no]stubs (OneFS-only) which uses st_flags bit
-//	- Added -select_[atime|mtime|ctime|birth]=<ref_time>
-//	- -lsc now emits HEX inode numbers (for improved compactness ... with no initial "0x".)
-//	- mystat now emits sb.st_flags keywords for non-zero st_flags
-// Version 2.07 - 2019/02 - New features ...
-//	- Option -since=<file> now implicitly enables -select
-//	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)
-//	- Added tracking of largest inode number 'seen' and 'selected'
-//	- Fixed -gz on OSX by using fflush() plus fclose() on pipes instead of pclose()
-//	- Fixed new threading model on OSX by correcting worker mutex initializations
-//	- New thread management has no polling loop, and shows work time more accurately
-//	- Re-structured thread management to solve hang-before-exit race conditions
-//	- Bugfix: all pwalk outputs now owned by pwalk's user rather than setuid/setgid identity
-// Version 2.06 - 2018/09 - 2019/01 - New Features in-process
-//	- Added "tolerate '\n' and other binary in FIFO pathnames" (asciify())
-//	- Bugfix; .err outputs now line-buffered (was erroneously full-buffered)
-//	- Default <directory> is now "." (relative to SOURCE) if none given on command line
-//	- Bugfix: "Hang on starting" - streamlined directory_scan() & eliminated WAKEUP mutex
-//	- Added read and write of NTFS ACLs (NFS4, OSX-native, OneFS-native, and possibly Windows-native)
-//	- Added +md5 and +sha1 options (IN-PROGRESS; calculate using same f() as +crc!)
-//		... optionally convey in wacls data stream
-//		... store md5 and/or sha1 checksums as an attribute during -cp operations
-//		... validate calculated versus stored md5 checksums
-//		... store md5 as attribute on target with -cp +md5
-//	- Added -cp primary mode to mass copy files to [target] (data, owner, group, sd)
-//		... where the sd (security descriptor) can be processed in-band
-//	- Updated wacls: convey/capture additional metadata
-//		... add chown, chgrp, chmod, utimes, md5, sha1, (OneFS futimes & WORM state)
-//		... v2 stream format, preserving compatabllity with v1.0 format
-//		... Unity-native wacls build
-// ...
-// Version 2.06b1 - 2018/10/17 - New Features & changed behaviors
-//	- Updated slide deck
-//	- Added rudimentary DS/WS/GS counters for hard links & zero-length files
-//	- Added -redact option; output only hex inode numbers for most modes
-//	- Added -bs=512 option; default changed to 1024
-//	- +tally output is now 'pwalk_tally.csv' and hard-coded for file size buckets
-//	- +tally re-write with an eye towards external parameterization
-//	- Silently skip .ifsvar when it is an exact relative-root match (klooge: imperfect reasoning)
-//	- Log all per-worker WARNING and ERROR messages to worker*.err files (instead of pwalk.log)
-//	- Changed -ls_special to -lsc (compact) & now shows inode number on each line (unless -redact)
-//	- -rm now creates .rm outputs
-// Version 2.05b4 2018/07/16 - Bug fixes
-//	- Remove +xacls extraneous debug output in .log file
-// Version 2.05b3 2018/06/28 - Bug fixes
-//	- Fix +xacls brokeness from new multipath logic; ancient typo and ancient dangling logic error
-// Version 2.05b2 2018/06/?? - New modes and major OneFS improvements
-//	- Added -lsd primary mode
-// Version 2.05b1 2018/05/23 - New modes and major bug fix.
-//	- BUGFIX: Major fix to new multi-pathing implementation
-//	- BUGFIX: Issue WARNING and skip directories with embedded '\n' characters (!)
-//	- Added -ls-special primary mode (reason for minor version bump)
-//	- Added -rm primary mode (reason for minor version bump)
-//	- Added -since=<file> for -select logic (TEMPORARY)
-//	- Improved logic for catching EOPNOTSUPP on ACL reads in a directory (once you know, quit trying!)
-//	- Replaced -acls with +acls - do not fetch ACLs unless explcitly requested!
-//	- Changed -paths= to -pfile= - now includes [source], [target], [output] and [select] sections)
-// Version 2.04 2018/03/19 - New -paths= functionality plus misc
-//	- New rules for -paths= file syntax and constraints w.r.t. -source= and -target= args
-// Version 2.03 2018/03/17 - Code cleanup & new features
-//	- Arguments changed: -source= and -target replace -cd= and -shadow= concepts (retroactively)
-//	- Always silently skip .isi-compliance directories in -audit mode
-//	- Add hourly progress reporting to pwalk.log
-//	- Tweak +tally logic, preparatory to externalizing its parameters
-//	- Add -cmp[=<keyword_list>] primary mode
-//	- Use efficient cmp_files(w_id, pathname) for -cmp full binary compare
-//	- Use fstatat() and openat() for all multipath stat() and open() operations during treewalk
-// Version 2.02 2017/07/10 - Feature adds & MAJOR bug fix
-//	- Added +rm_acls option (OneFS only) removes all non-inherited ACEs
-//	- If current or calculated ACL is NULL, replace with apparent mode bits
-//	- Corrected READONLY operations to use O_NOFOLLOW | O_OPENLINK (!)
-//	- Bug fix: eliminate distinct lock for FIFO; use MP_lock instead, and simplify control flow
-//	- '+acls' changed to '-acls' to SUPPRESS ACL-fetching with -ls and -xml
-//	- '+crc' added to -ls and -xml outputs
-// Version 2.01 2017/05/12 - Feature adds
-//	- Added -source= option; root for source directories
-// Version 2.0 2017/04 - Code restructuring & cleanup
-// Version 1.9.78 2016/12/15 - Feature added
-//	- Add OneFS logic for extracting native ownership (ID vs. SID)
-// Version 1.9.76 2016/12/13 - Feature adds
-//	- Added -csv= primary mode (PARTIAL)
-//	- Changed old -tag to +tally[=<string>]
-//	- Start parameterizing +tally buckets (hardcoded)
-// Version 1.9.75 2016/??/?? - Bug fixes
-//	- Isolate from SIGINT or other truss-related signals (TBD)
-//	- Added '-1' write to Python pclose in the SAR logic
-//	- Add initial timestamp in log file
-// Version 1.9.74 2016/11/01 - Bug fixes & added robustness ...
-//	- When output directory cannot be created due to EEXIST, retry up to MAX_MKDIR_RETRIES times
-//	- Send '-1' to Python before pclose() to tell it to exit()
-//	- Python changed: now returns 'P' as 1st column, errno as 2nd column
-//	- Python changed: now recognizes '-1' as a signal to exit()
-// Version 1.9.73 2016/11/01 - Special -audit logic for SmartLock accounting
-//	- Output raw w_ctime and w_retention_time
-//	- Output Python call count
-// Version 1.9.72 2016/11/01 - Enhance -audit reporting
-// Version 1.9.71 2016/11/01 - Enhance -audit reporting
-// Version 1.97 2016/07/20 - Add ACL-handling options (Linux ONLY)
-//	- "+crc" adds CRC value to SmartLock -audit report (reads all files!)
-//	- "+xacls=" pulls POSIX ACLs, translates them to NFSv4 for output in various formats
-//	- "+wacls=" pulls POSIX ACLs, translates them to NFSv4 for 'wacls' symbiont on OneFS
-//	- "+acls" pulls POSIX ACLs and may alter -ls and -xml outputs
-//	- Conditionalize for clean compiles on Linux, OneFS 7.2, and OneFS 8.0
-//	- New POSIX-to-NFS4 ACL code in pwalk_acls.[ch], documented in pwalk_acls_<version>.docx (Linux ONLY)
-// Version 1.96 2016/03/22 - Add -acls option
-//	- ".snapshot" (OneFS) and ".snapshots" (GPFS) are now both considered as snapshot directories
-//	- Added tentative portability bits for xattrs and Debian Linux
-//	- Added st_blocks in -audit
-//	- ALL COUNTERS ARE NOW 64-BIT (typedef count_64)!!
-// Version 1.95 2016/03/07 - Check OSX/Linux/OneFS code portability
-//	- Modified -audit output
-// Version 1.94 2016/02/17 - Refinements to -audit
-//	- Make worker-to-Python symbiont ratio 1:1
-//	- Correct and refine -audit logic
-//	- Improve pwalk_python.py
-// Version 1.93 2016/02/08 - Limited release with -audit
-//	- Implement loosely-coupled Python co-processes for native OneFS execution
-// Version 1.92 2016/02/08 - Limited release with +tally
-//	- +tally code is prototype for similar logic for stuff like buckets by size
-// Version 1.91 2016/01/19 - Limited release with -fix_times
-//	- Includes references to OneFS-native lvtimes() API
-// Version 1.9 2015/12/30 - Correct and improve time-fixing logic
-//	- Changed -fix_mtimes to -fix_times
-//	- Changed fix_times() logic to catch *any* bad date (not in 32-bit [0 .. 0x7fffffff] Unix epoch)
-//	- Developed companion programs: mystat.c, pwalk_create_shadow.c, pwalk_touch_shadow.c, and  touch3.c
-//	- Leverage lvtimes() when running natively on OneFS
-//	- Use lutimes(2) with -fix-mtime for symlinks
-// Version 1.8 2015/11/16 - Added -fix_mtime option (uses optional -target= option)
-//	- Repairs [amcb]time values that are bad
-//	- Now MUST specify one of [ -ls, -xml, -fix_mtime, -cmp ]
-//	- Implemented '-target=' for '-fix_mtime'
-// Version 1.7 2015/1/21 - Minor mods
-//	- Count commandline args in 'directories' in .log summary count
-//	- Change (hidden) DENIST option to '+denist' (was '-denist')
-// Version 1.6 2015/1/21 - Redesignated version
-//	- Code/comment cleanup & PPTX sync point
-//	- OSX & Linux compile/build validation
-// Version 1.5+ 2014/12/03 - Minor code cleanup
-//	- Added '+tstat' option (timed statistics for stat() calls)
-//	- Added '-pmode' option (omit file mode bits output)
-// Version 1.5b 2014/09/10 - Major updates
-//	- Bug fix: "don't crash trying to close files that were never opened (race condition)"
-//	- Added '-paths=<pathfile>' feature for 'equivalent paths'
-//	- Added '-gz' feature
-//	- Added '+.snapshot' feature, plus logic to suppress .snapshot traversal by default
-//	- Added 'Files/second' statistic to summary stats
-//	- TBD: Change merge.
-//	- TBD: Assure that > 4B files can be walked (4*10^9); requires 64-bit unsigned counters.
-//	- TBD: Hide 'more fully-formed XML' outputs?
-// Version 1.5a 2014/05/30 - Make program do 'ls'-style output.
-//	- Not released.
-// Version 1.4 2013/10/20 - Bug fixes.
-//	- More fully-formed XML output.
-//	- Morph code for templated output function (LS, JSON, other)
-// Version 1.3a 2013/10/20 - Added obscure (hidden) DENIST benchmarking feature.
-//	- See DENIST notes below.
-// Version 1.3 2013/10/20 - Bug fixes.
-//	- Fixed race condition in worker startup logic.
-// Version 1.2 2013/10/15 - Redesigned threading model to give consistent results.
-//	- Major edits for clarity and maintainability
-//	- Prior coding strategy had subtle race conditions
-//	- Added -dop= and -paths= options
-// Version 1.1 2013/09/17 - Initial Linux build.
-// Version 1.0 2013/09/10 - First release.
-===========
+Version.FUTURE [ DEVELOPMENTAL TO-DO ]
+	SOMEHOW: Do something to avoid multiple-processing of hard-linked inodes
+	$$$$ Add find(1)-like selection predicates and actions
+	$$ Add pclt2 metadata items on OneFS
+		... Add ifs.file_pool metadata (OneFS only)
+		... Remove pwalk_python.py dependency for -audit
+	Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
+	Add external parameterization for -csv[=<list>] and [csv] pfile section (report column keys)
+		Inspired by: ps '-o' option (inode,asize,mode,nlink,nsize,name)
+	Add external parameterization for -select in [tally] pfile section (file selection criteria)
+	Add external parameterization for +tally in [tally] section of parameter file
+	Add MD5 checksum features to -cmp mode
+	Add external parameters for -csv mode (the next most-likely project)
+	Make concurrency runtime-dynamic to allow variable impact
+	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
+...
+Version 2.08 - 2019/09 - New features & fixes ...
+	- TODO: FIX: Always emit asccify'd directory and file names in primary outputs
+	- TODO: NEW: -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
+	- FIX: Do not open symlinks under OneFS! (dirent readonly ops)
+	- NEW: -select=[no]stubs (OneFS-only) which uses st_flags bit
+	- NEW: -select_[atime|mtime|ctime|birth]=<ref_time>
+	- NEW: -lsf ('full') shows full pathname for every dirent output (ie: 'selected')
+	- -lsc now emits HEX inode numbers (for improved compactness ... with no initial "0x".)
+	- mystat now emits sb.st_flags keywords for non-zero st_flags
+Version 2.07 - 2019/02 - New features ...
+	- Option -since=<file> now implicitly enables -select
+	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)
+	- Added tracking of largest inode number 'seen' and 'selected'
+	- Fixed -gz on OSX by using fflush() plus fclose() on pipes instead of pclose()
+	- Fixed new threading model on OSX by correcting worker mutex initializations
+	- New thread management has no polling loop, and shows work time more accurately
+	- Re-structured thread management to solve hang-before-exit race conditions
+	- Bugfix: all pwalk outputs now owned by pwalk's user rather than setuid/setgid identity
+Version 2.06 - 2018/09 - 2019/01 - New Features in-process
+	- Added "tolerate '\n' and other binary in FIFO pathnames" (asciify())
+	- Bugfix; .err outputs now line-buffered (was erroneously full-buffered)
+	- Default <directory> is now "." (relative to SOURCE) if none given on command line
+	- Bugfix: "Hang on starting" - streamlined directory_scan() & eliminated WAKEUP mutex
+	- Added read and write of NTFS ACLs (NFS4, OSX-native, OneFS-native, and possibly Windows-native)
+	- Added +md5 and +sha1 options (IN-PROGRESS; calculate using same f() as +crc!)
+		... optionally convey in wacls data stream
+		... store md5 and/or sha1 checksums as an attribute during -cp operations
+		... validate calculated versus stored md5 checksums
+		... store md5 as attribute on target with -cp +md5
+	- Added -cp primary mode to mass copy files to [target] (data, owner, group, sd)
+		... where the sd (security descriptor) can be processed in-band
+	- Updated wacls: convey/capture additional metadata
+		... add chown, chgrp, chmod, utimes, md5, sha1, (OneFS futimes & WORM state)
+		... v2 stream format, preserving compatabllity with v1.0 format
+		... Unity-native wacls build
+...
+Version 2.06b1 - 2018/10/17 - New Features & changed behaviors
+	- Updated slide deck
+	- Added rudimentary DS/WS/GS counters for hard links & zero-length files
+	- Added -redact option; output only hex inode numbers for most modes
+	- Added -bs=512 option; default changed to 1024
+	- +tally output is now 'pwalk_tally.csv' and hard-coded for file size buckets
+	- +tally re-write with an eye towards external parameterization
+	- Silently skip .ifsvar when it is an exact relative-root match (klooge: imperfect reasoning)
+	- Log all per-worker WARNING and ERROR messages to worker*.err files (instead of pwalk.log)
+	- Changed -ls_special to -lsc (compact) & now shows inode number on each line (unless -redact)
+	- -rm now creates .rm outputs
+Version 2.05b4 2018/07/16 - Bug fixes
+	- Remove +xacls extraneous debug output in .log file
+Version 2.05b3 2018/06/28 - Bug fixes
+	- Fix +xacls brokeness from new multipath logic; ancient typo and ancient dangling logic error
+Version 2.05b2 2018/06/?? - New modes and major OneFS improvements
+	- Added -lsd primary mode
+Version 2.05b1 2018/05/23 - New modes and major bug fix.
+	- BUGFIX: Major fix to new multi-pathing implementation
+	- BUGFIX: Issue WARNING and skip directories with embedded '\n' characters (!)
+	- Added -ls-special primary mode (reason for minor version bump)
+	- Added -rm primary mode (reason for minor version bump)
+	- Added -since=<file> for -select logic (TEMPORARY)
+	- Improved logic for catching EOPNOTSUPP on ACL reads in a directory (once you know, quit trying!)
+	- Replaced -acls with +acls - do not fetch ACLs unless explcitly requested!
+	- Changed -paths= to -pfile= - now includes [source], [target], [output] and [select] sections)
+Version 2.04 2018/03/19 - New -paths= functionality plus misc
+	- New rules for -paths= file syntax and constraints w.r.t. -source= and -target= args
+Version 2.03 2018/03/17 - Code cleanup & new features
+	- Arguments changed: -source= and -target replace -cd= and -shadow= concepts (retroactively)
+	- Always silently skip .isi-compliance directories in -audit mode
+	- Add hourly progress reporting to pwalk.log
+	- Tweak +tally logic, preparatory to externalizing its parameters
+	- Add -cmp[=<keyword_list>] primary mode
+	- Use efficient cmp_files(w_id, pathname) for -cmp full binary compare
+	- Use fstatat() and openat() for all multipath stat() and open() operations during treewalk
+Version 2.02 2017/07/10 - Feature adds & MAJOR bug fix
+	- Added +rm_acls option (OneFS only) removes all non-inherited ACEs
+	- If current or calculated ACL is NULL, replace with apparent mode bits
+	- Corrected READONLY operations to use O_NOFOLLOW | O_OPENLINK (!)
+	- Bug fix: eliminate distinct lock for FIFO; use MP_lock instead, and simplify control flow
+	- '+acls' changed to '-acls' to SUPPRESS ACL-fetching with -ls and -xml
+	- '+crc' added to -ls and -xml outputs
+Version 2.01 2017/05/12 - Feature adds
+	- Added -source= option; root for source directories
+Version 2.0 2017/04 - Code restructuring & cleanup
+Version 1.9.78 2016/12/15 - Feature added
+	- Add OneFS logic for extracting native ownership (ID vs. SID)
+Version 1.9.76 2016/12/13 - Feature adds
+	- Added -csv= primary mode (PARTIAL)
+	- Changed old -tag to +tally[=<string>]
+	- Start parameterizing +tally buckets (hardcoded)
+Version 1.9.75 2016/??/?? - Bug fixes
+	- Isolate from SIGINT or other truss-related signals (TBD)
+	- Added '-1' write to Python pclose in the SAR logic
+	- Add initial timestamp in log file
+Version 1.9.74 2016/11/01 - Bug fixes & added robustness ...
+	- When output directory cannot be created due to EEXIST, retry up to MAX_MKDIR_RETRIES times
+	- Send '-1' to Python before pclose() to tell it to exit()
+	- Python changed: now returns 'P' as 1st column, errno as 2nd column
+	- Python changed: now recognizes '-1' as a signal to exit()
+Version 1.9.73 2016/11/01 - Special -audit logic for SmartLock accounting
+	- Output raw w_ctime and w_retention_time
+	- Output Python call count
+Version 1.9.72 2016/11/01 - Enhance -audit reporting
+Version 1.9.71 2016/11/01 - Enhance -audit reporting
+Version 1.97 2016/07/20 - Add ACL-handling options (Linux ONLY)
+	- "+crc" adds CRC value to SmartLock -audit report (reads all files!)
+	- "+xacls=" pulls POSIX ACLs, translates them to NFSv4 for output in various formats
+	- "+wacls=" pulls POSIX ACLs, translates them to NFSv4 for 'wacls' symbiont on OneFS
+	- "+acls" pulls POSIX ACLs and may alter -ls and -xml outputs
+	- Conditionalize for clean compiles on Linux, OneFS 7.2, and OneFS 8.0
+	- New POSIX-to-NFS4 ACL code in pwalk_acls.[ch], documented in pwalk_acls_<version>.docx (Linux ONLY)
+Version 1.96 2016/03/22 - Add -acls option
+	- ".snapshot" (OneFS) and ".snapshots" (GPFS) are now both considered as snapshot directories
+	- Added tentative portability bits for xattrs and Debian Linux
+	- Added st_blocks in -audit
+	- ALL COUNTERS ARE NOW 64-BIT (typedef count_64)!!
+Version 1.95 2016/03/07 - Check OSX/Linux/OneFS code portability
+	- Modified -audit output
+Version 1.94 2016/02/17 - Refinements to -audit
+	- Make worker-to-Python symbiont ratio 1:1
+	- Correct and refine -audit logic
+	- Improve pwalk_python.py
+Version 1.93 2016/02/08 - Limited release with -audit
+	- Implement loosely-coupled Python co-processes for native OneFS execution
+Version 1.92 2016/02/08 - Limited release with +tally
+	- +tally code is prototype for similar logic for stuff like buckets by size
+Version 1.91 2016/01/19 - Limited release with -fix_times
+	- Includes references to OneFS-native lvtimes() API
+Version 1.9 2015/12/30 - Correct and improve time-fixing logic
+	- Changed -fix_mtimes to -fix_times
+	- Changed fix_times() logic to catch *any* bad date (not in 32-bit [0 .. 0x7fffffff] Unix epoch)
+	- Developed companion programs: mystat.c, pwalk_create_shadow.c, pwalk_touch_shadow.c, and  touch3.c
+	- Leverage lvtimes() when running natively on OneFS
+	- Use lutimes(2) with -fix-mtime for symlinks
+Version 1.8 2015/11/16 - Added -fix_mtime option (uses optional -target= option)
+	- Repairs [amcb]time values that are bad
+	- Now MUST specify one of [ -ls, -xml, -fix_mtime, -cmp ]
+	- Implemented '-target=' for '-fix_mtime'
+Version 1.7 2015/1/21 - Minor mods
+	- Count commandline args in 'directories' in .log summary count
+	- Change (hidden) DENIST option to '+denist' (was '-denist')
+Version 1.6 2015/1/21 - Redesignated version
+	- Code/comment cleanup & PPTX sync point
+	- OSX & Linux compile/build validation
+Version 1.5+ 2014/12/03 - Minor code cleanup
+	- Added '+tstat' option (timed statistics for stat() calls)
+	- Added '-pmode' option (omit file mode bits output)
+Version 1.5b 2014/09/10 - Major updates
+	- Bug fix: "don't crash trying to close files that were never opened (race condition)"
+	- Added '-paths=<pathfile>' feature for 'equivalent paths'
+	- Added '-gz' feature
+	- Added '+.snapshot' feature, plus logic to suppress .snapshot traversal by default
+	- Added 'Files/second' statistic to summary stats
+	- TBD: Change merge.
+	- TBD: Assure that > 4B files can be walked (4*10^9); requires 64-bit unsigned counters.
+	- TBD: Hide 'more fully-formed XML' outputs?
+Version 1.5a 2014/05/30 - Make program do 'ls'-style output.
+	- Not released.
+Version 1.4 2013/10/20 - Bug fixes.
+	- More fully-formed XML output.
+	- Morph code for templated output function (LS, JSON, other)
+Version 1.3a 2013/10/20 - Added obscure (hidden) DENIST benchmarking feature.
+	- See DENIST notes below.
+Version 1.3 2013/10/20 - Bug fixes.
+	- Fixed race condition in worker startup logic.
+Version 1.2 2013/10/15 - Redesigned threading model to give consistent results.
+	- Major edits for clarity and maintainability
+	- Prior coding strategy had subtle race conditions
+	- Added -dop= and -paths= options
+Version 1.1 2013/09/17 - Initial Linux build.
+Version 1.0 2013/09/10 - First release.
