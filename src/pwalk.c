@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.08beta5"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.08beta6"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -196,11 +196,12 @@ typedef enum {EMBRYONIC=0, IDLE, BUSY} wstatus_t;	// Worker status
 static int N_WORKERS = 1;		// <N> from "-dop=<N>" defaults to 1
 static int MAX_OPEN_FILES = 0;		// Calculated to compare with getrlimit(NOFILES)
 static int ABSPATH_MODE = 0;		// True when absolute paths used (FUTURE: eliminate)
-static int Opt_SKIPSNAPS = 1;		// Skip .snapshot[s] dirs unless '+.snapshot' specified
+static int Opt_IFSVAR = 0;		// Include .ifsvar dirs
+static int Opt_SNAPSHOTS = 0;		// Include .snapshot[s] dirs
 static int Opt_TSTAT = 0;		// Show timed statistics when +tstat used
 static int Opt_GZ = 0;			// gzip output streams when '-gz' used
 static int Opt_REDACT = 0;		// Redact output (hex inodes instead of names)
-static int Opt_MODE = 1;		// Show mode bits unless -pmode suppresses
+static int Opt_PMODE = 1;		// Show mode bits unless -pmode suppresses
 static int Opt_SPAN = 0;		// Include dirs that cross filesystems unless '+span'
 #if defined(__ONEFS__)
 static int P_ACL_P = 1;			// Show ACL as '+' always (because we know from st_flags)
@@ -346,13 +347,13 @@ typedef struct {
    count_64 NFiles;				// ... # that were files
    count_64 NSymlinks;				// ... # that were symlinks
    count_64 NOthers;				// ... # that were others
-   count_64 NStatErrors;			// ... # that were errors
+   count_64 NStatErrs;			// ... # that were errors
    count_64 NWarnings;				// Scan issues other than stat() failures
    count_64 NZeroFiles;				// Number of ordinary files of size 0
    count_64 NHardLinkFiles;			// Number of non-directories with link count > 1
    count_64 NHardLinks;				// Sum of hard link counts > 1
-   off_t NBytesAllocated;			// Sum of allocated space
-   off_t NBytesNominal;				// Sum of nominal file sizes
+   off_t NBytesPhysical;			// Sum of allocated space
+   off_t NBytesLogical;				// Sum of nominal file sizes
    // Accumulated per-worker ...
    count_64 READONLY_Zero_Files;		// READONLY zero-length files
    count_64 READONLY_Opens;			// READONLY file opens
@@ -572,6 +573,7 @@ usage(void)
 #if defined(__ONEFS__) || defined(__APPLE__)
    printf("	-since_birth=<ref_time>	// select files with birthtime > birthtime(<ref_time>)\n");
 #endif
+   printf("	+.ifsvar		// include .ifsvar directories (OFF by default)\n");
    printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("	+span			// include directories that span filesystems (OFF by default)\n");
    exit(-1);
@@ -773,13 +775,14 @@ yield_cpu(void)
 #endif
 }
 
-// format_mode_bits() - translate passed mode into 'rwx' format in passed buffer
+// format_mode_bits() - translate passed mode into 'rwx' format in passed buffer.
+// NOTE: We always calculate this, even if !Opt_PMODE, because we might want to 
+// use it for debug output or some such.
 
 void
 format_mode_bits(char *str, mode_t mode)
 {
    str[0] = '\0';			// default NUL string
-   if (!Opt_MODE) return;
 
    switch (mode & S_IFMT) {
    case S_IFIFO:  str[0] = 'p'; break;
@@ -1222,11 +1225,11 @@ skip_this_directory(char *pathname, struct stat *sb, int w_id)
 
    // Directories we skip by name all begin with a '.' ...
    if (filename[0] == '.') {
-      if (strcmp(filename, ".ifsvar") == 0)
+      if (Cmd_AUDIT && strcmp(filename, ".isi-compliance") == 0)
          skip = 1;
-      else if (Cmd_AUDIT && strcmp(filename, ".isi-compliance") == 0)
+      else if (!Opt_IFSVAR && strcmp(filename, ".ifsvar") == 0)
          skip = 1;
-      else if (Opt_SKIPSNAPS) {
+      else if (!Opt_SNAPSHOTS) {
          if (strcmp(filename, ".snapshot") == 0 ||
              strcmp(filename, ".snapshots") == 0) skip = 1;
       }
@@ -2694,7 +2697,7 @@ void
 directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 {	// +++++ klooge: BREAK UP THIS SPAGHETTI CODE: START +++++
    DIR *dir;
-   int fd, dfd, dirent_type, dirent_selected, dirent_isdir, dir_entry_shown;;
+   int fd, dfd, dirent_type, dirent_selected, dirent_isdir, directory_reported;
    int i, rc, have_stat, acl_present, acl_supported = TRUE;
    int openit;				// Flag indicates we must open files for READONLY purposes
    int pathlen, namelen;
@@ -2821,10 +2824,10 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
 
    // Re-Initialize Directory Subtotals (DS) ...
    bzero(&DS, sizeof DS);
-   DS.NBytesNominal = curdir_sb.st_size;
-   DS.NBytesAllocated = bytes_allocated = curdir_sb.st_blocks * ST_BLOCK_SIZE;
+   DS.NBytesLogical = curdir_sb.st_size;
+   DS.NBytesPhysical = bytes_allocated = curdir_sb.st_blocks * ST_BLOCK_SIZE;
 
-dir_cmp_logic: // @@@ GATHER & OUTPUT (directory): -cmp mode ...
+   // @@@ GATHER & OUTPUT (directory): -cmp mode for the directory itself ...
    if (Cmd_CMP) {
       cmp_source_target(w_id, RelPathDir, &curdir_sb, cmp_dir_result_str);
       // If TARGET dir does not exist, save scan time by just reporting 'E' for all dir contents.
@@ -2836,7 +2839,7 @@ dir_cmp_logic: // @@@ GATHER & OUTPUT (directory): -cmp mode ...
       }
    }
 
-dir_acl_logic: // @@@ GATHER & PROCESS (directory): ACL ...
+   // @@@ GATHER & PROCESS (directory): ACL on the directory itself ...
    // directory_acl = pwalk_acl_get_fd(dfd);	// DEVELOPMENTAL for +rm_acls
 #if defined(__ONEFS__)
    acl_present = (curdir_sb.st_flags & SF_HASNTFSACL);
@@ -2868,7 +2871,7 @@ dir_acl_logic: // @@@ GATHER & PROCESS (directory): ACL ...
 #endif // PWALK_ACLS
 
    // @@@ FORMAT/directory_mode: Add '+' to mode string ...
-   if (acl_present && Opt_MODE && P_ACL_P) strcat(mode_str, "+");
+   if (acl_present) strcat(mode_str, "+");
 
    // @@@ GATHER (directory): Owner name, group name, owner_sid, group_sid ...
    get_owner_group(&curdir_sb, owner_name, group_name, owner_sid, group_sid);
@@ -2904,7 +2907,7 @@ dir_scan_loop_begin: // @@@ DIRECTORY SCAN LOOP (top): push dirs as we go ...
    // NOTE: readdir_r() is the main potential metadata-reading LATENCY HOTSPOT
    if (VERBOSE > 2) { fprintf(WLOG, "@readdir_r loop\n"); fflush(WLOG); }
    n_dirent_selected = 0;
-   dir_entry_shown = 0;
+   directory_reported = 0;
    while (((rc = readdir_r(dir, pdirent, &result)) == 0) && (result == pdirent)) {
       // @@@ PATHCALC (dirent): Quietly skip "." and ".." ...
       FileName = pdirent->d_name;
@@ -2965,7 +2968,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          if (Opt_TSTAT) { t1 = gethrtime(); sprintf(ns_stat_s," (%lldus) ", (t1-t0)/1000); }
          DS.NStatCalls += 1;
          if (rc) {
-            DS.NStatErrors += 1;
+            DS.NStatErrs += 1;
             WS[w_id]->NWarnings += 1;
             if (Cmd_XML) fprintf(WLOG, "<warning> Cannot stat(%s) (rc=%d) </warning>\n", RelPathName, rc);
             else fprintf(WERR, "WARNING: Cannot stat(%s) (rc=%d)\n", RelPathName, rc);
@@ -3038,14 +3041,12 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          }
       }
 
-      // @@@ GATHER (dirent): Fetch and process file ACL ...
+      // @@@ GATHER/dirent/acl): Fetch and process dirent ACL ...
+      acl_present = 0;		// It's a flag on OneFS, but another metadata call elsewhere (for later)
 #if defined(__ONEFS__)
       acl_present = (dirent_sb.st_flags & SF_HASNTFSACL);
-#else
-      acl_present = 0;	// It's a flag on OneFS, but another metadata call elsewhere (for later)
 #endif
-
-#if PWALK_ACLS // Linux ACL-related logic for a <file> ....
+#if PWALK_ACLS			 // Linux ACL-related logic for a <file> ....
       ns_getacl_s[0]='\0';
       acl4.n_aces = 0;
       if (acl_supported && (P_ACL_P || Cmd_XACLS || Cmd_WACLS)) {
@@ -3065,15 +3066,15 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
             }
             continue;
          }
-         if (aclstat) {
-            acl_present = TRUE;
-            if (!S_ISDIR(dirent_sb.st_mode)) DS.NACLs += 1;
-         } else strcat(mode_str, ".");
+         if (aclstat) acl_present = TRUE;
       }
 #endif // PWALK_ACLS
 
-      // @@@ META: Add '+' to mode bits to show ACL ...
-      if (acl_present && Opt_MODE && P_ACL_P) strcat(mode_str, "+");	// Actually only works in OneFS?
+      // @@@ META/dirent/acl: Add '+' to mode bits to indicate ACL presence ...
+      if (acl_present) {
+         strcat(mode_str, "+");
+         DS.NACLs += 1;
+      }
 
       // @@@ ACTION/fix_acls: FUTURE ....
       // ##### klooge - FUTURE ...
@@ -3112,8 +3113,8 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
       // NOTE: To avoid double-counting, we only count nominal directory sizes ONCE; when we pop them.
       // However, directory output lines will reflect the sizes reported by stat().
       if (!S_ISDIR(dirent_sb.st_mode)) {
-         DS.NBytesNominal += dirent_sb.st_size;
-         DS.NBytesAllocated += bytes_allocated = dirent_sb.st_blocks * ST_BLOCK_SIZE;
+         DS.NBytesLogical += dirent_sb.st_size;
+         DS.NBytesPhysical += bytes_allocated = dirent_sb.st_blocks * ST_BLOCK_SIZE;
       }
 
       // @@@ GATHER (dirent): Owner name & group name ...
@@ -3206,31 +3207,28 @@ dirent_meta_munge: // @@@
       //    (UL(dirent_sb.st_mtime) != UL(dirent_sb.st_ctime)) ? " NOTE: M!=C" : ""
 #endif
 
-      // @@@ OUTPUT/directory_start: Report *start* of results from current <directory> ...
-      if (!dir_entry_shown && (dirent_selected || n_dirent_selected == 1)) {
-         if (Cmd_XML) {
-            fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
-               bytes_allocated, (Opt_MODE ? " " : ""), mode_str, curdir_sb.st_nlink,
-               (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
-         } else if (Cmd_LS || Cmd_LSD || Cmd_LSF) {
-            if (ftell(WLOG)) fprintf(WLOG, "\n");
+      // @@@ OUTPUT/directory_start: Report *start* of results from current directory ...
+      // klooge: logic here gets repeated below for empty directory w/o selection
+      // NOTE: -audit, -trash, and -rm worry about this differently ...
+      // NOTE: The initial newline is omiited before the first output of the first worker's
+      // output for the trivial and vain purpose of making it look nice when all of the
+      // worker's outputs are cat'ed together.  ;-)
+      if (!directory_reported && (dirent_selected && n_dirent_selected == 1)) {
+         if (Cmd_LS || Cmd_LSC || Cmd_LSD || Cmd_LSF) {
+            if (w_id || ftell(WLOG)) fprintf(WLOG, "\n");
             fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
-         } else if (Cmd_LSC) {
-            if (ftell(WLOG)) fprintf(WLOG, "\n");
-            if (Opt_REDACT) fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
-            else            fprintf(WLOG, "@ %llx %s\n", curdir_sb.st_ino, REDACT_RelPathDir);
-         } else if (Cmd_RM) {
-            rm_path_hits = 0;		// reset for this dir; -rm does not act on directories
-         } else if (Cmd_FIXTIMES) {
-            ; // fprintf(WLOG, "# \"%s\":\n", REDACT_RelPathDir);
-         } 
-         dir_entry_shown = 1;
+         } else if (Cmd_XML) {
+            fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
+               bytes_allocated, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
+               (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
+         }
+         directory_reported = 1;
       }
 
       // @@@ OUTPUT/dirent: Mutually-exclusive primary modes ...
       if (Cmd_LS) {			// -ls
          fprintf(WLOG, "%s %u %lld %s%s%s\n",
-            (Opt_MODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size,
+            (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size,
              REDACT_FileName, ns_stat_s, crc_str);
       } else if (Cmd_LSC) {		// -lsc
          if (!S_ISDIR(dirent_sb.st_mode)) {
@@ -3241,7 +3239,7 @@ dirent_meta_munge: // @@@
          fprintf(WLOG, "%c %s\n", mode_str[0], RelPathName);
       } else if (Cmd_XML) {		// -xml
          fprintf(WLOG, "<file> %s %u %lld %s%s%s </file>\n",
-            (Opt_MODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
+            (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
       } else if (Cmd_CMP) {		// -cmp
          if (cmp_target_dir_exists)
             cmp_source_target(w_id, RelPathName, &dirent_sb, cmp_file_result_str);
@@ -3307,7 +3305,7 @@ dir_summary:
       // statistics (WS[w_id]-><value>) After workers finish, per-worker statistsics will be
       // aggregated to the global statistics block (GS.<value>) for summary reporting.
       WS[w_id]->NStatCalls += DS.NStatCalls;
-      WS[w_id]->NStatErrors += DS.NStatErrors;
+      WS[w_id]->NStatErrs += DS.NStatErrs;
       WS[w_id]->NScanned += DS.NScanned;
       WS[w_id]->NSelected += DS.NSelected;
       WS[w_id]->NRemoved += DS.NRemoved;
@@ -3315,23 +3313,38 @@ dir_summary:
       WS[w_id]->NDirs += DS.NDirs;
       WS[w_id]->NSymlinks += DS.NSymlinks;
       WS[w_id]->NOthers += DS.NOthers;
-      WS[w_id]->NBytesAllocated += DS.NBytesAllocated;
-      WS[w_id]->NBytesNominal += DS.NBytesNominal;
+      WS[w_id]->NBytesPhysical += DS.NBytesPhysical;
+      WS[w_id]->NBytesLogical += DS.NBytesLogical;
       WS[w_id]->NACLs += DS.NACLs;
       WS[w_id]->NZeroFiles += DS.NZeroFiles;
       WS[w_id]->NHardLinkFiles += DS.NHardLinkFiles;
       WS[w_id]->NHardLinks += DS.NHardLinks;
 
-      // @@@ OUTPUT/directory_exit: End-of-directory outputs ...
+      // @@@ OUTPUT/directory_start: klooge (repeated code) for *empty* directories ...
+      // Empty directories never have a dirent to trigger the directory start reporting.
+      // Non-empty directories will have reported the directory start in the dirent loop.
+      if (!directory_reported && !SELECT_ENABLED) {
+         if (Cmd_LS || Cmd_LSC || Cmd_LSD || Cmd_LSF) {
+            if (w_id || ftell(WLOG)) fprintf(WLOG, "\n");
+            fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
+         } else if (Cmd_XML) {
+            fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
+               bytes_allocated, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
+               (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
+         }
+         directory_reported = 1;	// FWIW ... nobody cares after here.
+      }
+
+      // @@@ OUTPUT/directory_exit: End-of-directory output ...
       if (!SELECT_ENABLED || (SELECT_ENABLED && n_dirent_selected > 0)) {
          if (Cmd_XML) {
             fprintf(WLOG, "<summary> f=%llu d=%llu s=%llu o=%llu errs=%llu lsize=%lld psize=%llu </summary>\n",
-               DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesNominal, DS.NBytesAllocated);
+               DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrs, DS.NBytesLogical, DS.NBytesPhysical);
             fprintf(WLOG, "</directory>\n");
          } else if (Cmd_LS || Cmd_LSC || Cmd_LSD || Cmd_LSF) {
             fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu z=%llu lsize=%llu psize=%llu errs=%llu\n",
                DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers,
-               DS.NZeroFiles, DS.NBytesNominal, DS.NBytesAllocated, DS.NStatErrors);
+               DS.NZeroFiles, DS.NBytesLogical, DS.NBytesPhysical, DS.NStatErrs);
          } else if (Cmd_RM && DS.NRemoved) {
             ; // ======== report count?  WS[w_id]->NRemoved += 1;
          }
@@ -3561,7 +3574,7 @@ process_arglist(int argc, char *argv[])
       } else if (strcmp(arg, "-redact") == 0) {
          Opt_REDACT = 1;
       } else if (strcmp(arg, "-pmode") == 0) {
-         Opt_MODE = 0;
+         Opt_PMODE = 0;
       } else if (strcmp(arg, "-bs=512") == 0) {
          ST_BLOCK_SIZE = 512;
       } else if (strcmp(arg, "-dryrun") == 0) {		// Modifiers ...
@@ -3595,8 +3608,10 @@ process_arglist(int argc, char *argv[])
          get_since_time(arg);				// Do or die!
          SELECT_ENABLED = 1;
       // Other selection-related <option> values ...
+      } else if (strcmp(arg, "+.ifsvar") == 0) {	// also traverse .ifsvar directories
+         Opt_IFSVAR = 1;
       } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
-         Opt_SKIPSNAPS = 0;
+         Opt_SNAPSHOTS = 1;
       } else if (strcmp(arg, "+span") == 0) {		// include dirs that cross filesystems
          Opt_SPAN = 1;
       } else if (*arg == '-' || *arg == '+') {		// Unknown +/- option ...
@@ -3780,7 +3795,7 @@ main(int argc, char *argv[])
    USER.egid = getegid();
 
    // Die quickly if not using 64-bit file offsets!
-   assert ( sizeof(GS.NBytesAllocated) == 8 );
+   assert ( sizeof(GS.NBytesPhysical) == 8 );
 
    // Allow only selected signals ...
    //==== sigemptyset(&sigmask);
@@ -3913,9 +3928,9 @@ main(int argc, char *argv[])
       GS.NFiles += WS[w_id]->NFiles;
       GS.NSymlinks += WS[w_id]->NSymlinks;
       GS.NOthers += WS[w_id]->NOthers;
-      GS.NStatErrors += WS[w_id]->NStatErrors;
-      GS.NBytesAllocated += WS[w_id]->NBytesAllocated;
-      GS.NBytesNominal += WS[w_id]->NBytesNominal;
+      GS.NStatErrs += WS[w_id]->NStatErrs;
+      GS.NBytesPhysical += WS[w_id]->NBytesPhysical;
+      GS.NBytesLogical += WS[w_id]->NBytesLogical;
       GS.NZeroFiles += WS[w_id]->NZeroFiles;
       GS.NHardLinkFiles += WS[w_id]->NHardLinkFiles;
       GS.NHardLinks += WS[w_id]->NHardLinks;
@@ -3995,32 +4010,32 @@ main(int argc, char *argv[])
    fprintf(Plog, "%16ld - involuntary context switches\n", p_usage.ru_nivcsw);
 
    fprintf(Plog, "@ Summary pwalk stats ...\n");
+   fprintf(Plog, "%16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
    fprintf(Plog, "%16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
    fprintf(Plog, "%16llu - pop%s\n", FIFO_POPS, (FIFO_POPS != 1) ? "s" : "");
-   fprintf(Plog, "%16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
-   if (GS.NPythonCalls > 0) 
-      fprintf(Plog, "%16llu - Python call%s from -audit\n",
+
+   // @@@ ... only report if they happened ...
+   if (GS.NPythonCalls > 0) fprintf(Plog, "%16llu - Python call%s from -audit\n",
          GS.NPythonCalls, (GS.NPythonCalls != 1) ? "s" : "");
-   // @@@ ... Results of -rm operations ...
-   if (Cmd_RM)
-      fprintf(Plog, "%16llu - file%s removed by -rm\n", GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
+   if (GS.NRemoved > 0) fprintf(Plog, "%16llu - file%s removed by -rm\n",
+         GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
 
    // @@@ ... Grand total of stat(2)-based stats ...
    fprintf(Plog, "%16llu - file%s scanned (%llu stat() errors)\n",
-      GS.NScanned, (GS.NScanned != 1) ? "s" : "", GS.NStatErrors);
+      GS.NScanned, (GS.NScanned != 1) ? "s" : "", GS.NStatErrs);
    fprintf(Plog, "%16llu - file%s selected ...\n", GS.NSelected, (GS.NSelected != 1) ? "s" : "");
    // fprintf(Plog, "%16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
-   fprintf(Plog, "%16llu = director%s\n", GS.NDirs, (GS.NDirs != 1) ? "ies" : "y");
-   fprintf(Plog, "%16llu = file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
-   fprintf(Plog, "%16llu = symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
-   fprintf(Plog, "%16llu = other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
-   fprintf(Plog, "%16llu - byte%s allocated (%4.2f GB)\n",
-      GS.NBytesAllocated, (GS.NBytesAllocated != 1) ? "s" : "", GS.NBytesAllocated / 1000000000.);
-   fprintf(Plog, "%16llu - byte%s nominal (%4.2f GB)\n",
-      GS.NBytesNominal, (GS.NBytesNominal != 1) ? "s" : "", GS.NBytesNominal / 1000000000.);
-   if (GS.NBytesNominal > 0) {	// protect divide ...
+   fprintf(Plog, "%16llu => director%s\n", GS.NDirs, (GS.NDirs != 1) ? "ies" : "y");
+   fprintf(Plog, "%16llu => file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
+   fprintf(Plog, "%16llu => symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
+   fprintf(Plog, "%16llu => other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
+   fprintf(Plog, "%16llu - byte%s logical (%4.2f GB)\n",
+      GS.NBytesLogical, (GS.NBytesLogical != 1) ? "s" : "", GS.NBytesLogical / 1000000000.);
+   fprintf(Plog, "%16llu - byte%s physical (%4.2f GB)\n",
+      GS.NBytesPhysical, (GS.NBytesPhysical != 1) ? "s" : "", GS.NBytesPhysical / 1000000000.);
+   if (GS.NBytesLogical > 0) {	// protect divide ...
       fprintf(Plog, "%15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
-         ((GS.NBytesAllocated - GS.NBytesNominal)*100.)/GS.NBytesNominal);
+         ((GS.NBytesPhysical - GS.NBytesLogical)*100.)/GS.NBytesLogical);
    }
    fprintf(Plog, "%16llu - zero-length file%s\n", GS.NZeroFiles, (GS.NZeroFiles != 1) ? "s" : "");
 
