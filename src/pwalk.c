@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.08beta3"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.08beta5"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -338,8 +338,10 @@ typedef struct {
    // Accumulated per-directory ...
    count_64 NOpendirs;				// Number of opendir() calls
    count_64 NACLs;				// +acls, +xacls=, or +wacls= # files & dirs w/ ACL processed
+   count_64 NScanned;				// Files scanned (superset of selected files)
+   count_64 NSelected;				// Files selected (when slection option(s) given)
    count_64 NRemoved;				// Files removed (with -rm)
-   count_64 NStatCalls;				// Number of calls to lstatat() during scans
+   count_64 NStatCalls;				// Number of lstatat() calls on dirents
    count_64 NDirs;				// ... # that were directories
    count_64 NFiles;				// ... # that were files
    count_64 NSymlinks;				// ... # that were symlinks
@@ -512,20 +514,21 @@ usage(void)
       PWALK_VERSION, PWALK_PLATFORM);
    printf(" Where:\n");
    printf("   <directory> ...		// one or more directories to traverse (REQUIRED)\n");
-   printf("      NOTE: Must be relative to any source or target relative root path(s) specifed.\n");
+   printf("	NOTE: <directory> args are evaluated relative to source path(s) specifed (default $CWD).\n");
    printf("   <primary_mode> is at most ONE of:\n");
    printf("	-ls			// creates .ls outputs (similar to 'ls -l' outputs)\n");
-   printf("	-lsd			// creates .ls outputs (like -ls), but only reports directory summaries\n");
    printf("	-lsc			// creates .ls outputs (compact)\n");
+   printf("	-lsd			// creates .ls outputs (directory subtotals *only)\n");
+   printf("	-lsf			// creates .ls outputs (full pathnames, preceded by type)\n");
    printf("	-xml			// creates .xml outputs\n");
-   printf("	-csv  (COMING SOON!)	// creates .csv outputs based on -pfile= [csv] parms\n");
+   //printf("	-csv  (DEVELOPMENTAL!)	// creates .csv outputs based on -pfile= [csv] parms\n");
    printf("	-cmp[=<keyword_list>]	// creates .cmp outputs based on stat(2) and binary compares\n");
 #if PWALK_AUDIT // OneFS only
    printf("	-audit			// creates .audit files based on OneFS SmartLock status\n");
 #endif // PWALK_AUDIT
    printf("	-fix_times		// creates .fix outputs (CAUTION: changes timestamps unless -dryrun!)\n");
    printf("	-rm			// creates .sh outputs (CAUTION: deletes files unless -dryrun!)\n");
-   printf("	-trash  (COMING SOON!)	// creates .sh outputs (CAUTION: moves files unless -dryrun!)\n");
+   //printf("	-trash (DEVELOPMENTAL!)	// creates .sh outputs (CAUTION: moves files unless -dryrun!)\n");
    printf("	NOTE: When no <primary_mode> is specified, pwalk creates .out outputs.\n");
    printf("   <secondary_mode> is zero or more of:\n");
    printf("	+denist			// read first 128 bytes of every file encountered\n");
@@ -544,7 +547,7 @@ usage(void)
    printf("	-pfile=<pfile>		// specify parameters for [source|target|output|select|csv]\n");
 
    printf("	-output=<output_dir>	// output directory location; (default is $CWD)\n");
-   printf("	-source=<source_dir>	// source directory; must be absolute path (default is CWD)\n");
+   printf("	-source=<source_dir>	// source directory; must be absolute path (default is $CWD)\n");
    printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp!\n");
    printf("	-v			// verbose; verbosity increased by each 'v'\n");
    printf("	-d			// debug; verbosity increased by each 'd'\n");
@@ -1194,16 +1197,18 @@ str_dump(char *str, char *dump)
    return (dump);
 }
 
-// skip_this_directory() - TRUE iff passed directory path should be skipped (ignored).
+// skip_this_directory() - TRUE iff passed directory path should be skipped (i.e.: ignored), *not*
+// pushed onto the FIFO for subsequent recursive descent.
 
 // klooge: IMPLEMENT [include_dir] and [exclude_dir] sections in parameter file to override or augment.
 // NOTE: ONLY to be called from fifo_push(), so ONLY directory paths are passed-in!
 
 int
-skip_this_directory(char *dirpath, struct stat *sb, int w_id)
+skip_this_directory(char *pathname, struct stat *sb, int w_id)
 {
-   char *fname_p;
-   char *skip = NULL;
+   char *filename;
+   char msg[16000];
+   int skip = 0;
 
    // @@@ Name-based skips ... by default, skip these directories ...
    //	.snapshot[s] - unless +snapshot was specified
@@ -1211,19 +1216,19 @@ skip_this_directory(char *dirpath, struct stat *sb, int w_id)
    //	.ifsvar - OneFS internal file space
 
    // Isolate filename ...
-   fname_p = rindex(dirpath, PATHSEPCHR);
-   if (fname_p == NULL) fname_p = dirpath;
-   else fname_p += 1;
+   filename = rindex(pathname, PATHSEPCHR);
+   if (filename == NULL) filename = pathname;
+   else filename += 1;
 
    // Directories we skip by name all begin with a '.' ...
-   if (fname_p[0] == '.') {
-      if (strcmp(dirpath, ".ifsvar") == 0)
-         skip = "Skipping .ifsvar";
-      else if (Cmd_AUDIT && strcmp(fname_p, ".isi-compliance") == 0)
-         skip = "Skipping .isi-compliance";
+   if (filename[0] == '.') {
+      if (strcmp(filename, ".ifsvar") == 0)
+         skip = 1;
+      else if (Cmd_AUDIT && strcmp(filename, ".isi-compliance") == 0)
+         skip = 1;
       else if (Opt_SKIPSNAPS) {
-         if (strcmp(fname_p, ".snapshot") == 0) skip = "Skipping .snapshot";
-         if (strcmp(fname_p, ".snapshots") == 0) skip = "Skipping .snapshots";
+         if (strcmp(filename, ".snapshot") == 0 ||
+             strcmp(filename, ".snapshots") == 0) skip = 1;
       }
       if (skip) goto out;
    }
@@ -1238,7 +1243,8 @@ skip_this_directory(char *dirpath, struct stat *sb, int w_id)
 
 out:
    if (skip) {
-      fprintf(WERR, "NOTICE: %s @ \"%s\"\n", skip, dirpath);
+      sprintf(msg, "NOTICE: Worker %d skipping \"%s\"\n", w_id, pathname);
+      LogMsg(msg, 1);
       return TRUE;
    } else {
       return FALSE;
@@ -2977,6 +2983,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          else dirent_type = DT_UNKNOWN;
 
          // Update DS per-directory misc counters ...
+         DS.NScanned += 1;
          if (dirent_type != DT_DIR) {
             if (dirent_sb.st_nlink > 1) {
                DS.NHardLinkFiles += 1;
@@ -3000,7 +3007,6 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
 
       // IMPORTANT: We can now skip non-selected() non-directories ...
       if (!dirent_selected && !dirent_isdir) goto next_dirent;
-
 
 
       // @@@ ACTION/dirent: -rm selected() non-directories only unless -dryrun ...
@@ -3088,8 +3094,9 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
       }
       // After possible PUSH, SKIP the rest for non-selected dirents ...
       if (!dirent_selected) goto next_dirent;
+      else DS.NSelected += 1;
 
-      // >>>>>>>>>>>>>>>>>>>> remaining dirent logic for selected() dirents only! <<<<<<<<<<<<<<<<<<<<
+      // >>>>>>>>>>>> remaining dirent logic for selected() dirents only! <<<<<<<<<<<<
 
       // @@@ GATHER (dirent): Accumulate f/d/s/o counts only for selected() dirents ...
       if (S_ISREG(dirent_sb.st_mode)) {		// ordinary
@@ -3301,6 +3308,9 @@ dir_summary:
       // aggregated to the global statistics block (GS.<value>) for summary reporting.
       WS[w_id]->NStatCalls += DS.NStatCalls;
       WS[w_id]->NStatErrors += DS.NStatErrors;
+      WS[w_id]->NScanned += DS.NScanned;
+      WS[w_id]->NSelected += DS.NSelected;
+      WS[w_id]->NRemoved += DS.NRemoved;
       WS[w_id]->NFiles += DS.NFiles;
       WS[w_id]->NDirs += DS.NDirs;
       WS[w_id]->NSymlinks += DS.NSymlinks;
@@ -3315,13 +3325,13 @@ dir_summary:
       // @@@ OUTPUT/directory_exit: End-of-directory outputs ...
       if (!SELECT_ENABLED || (SELECT_ENABLED && n_dirent_selected > 0)) {
          if (Cmd_XML) {
-            fprintf(WLOG, "<summary> f=%llu d=%llu s=%llu o=%llu errs=%llu space=%llu size=%lld </summary>\n",
-               DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesAllocated, DS.NBytesNominal);
+            fprintf(WLOG, "<summary> f=%llu d=%llu s=%llu o=%llu errs=%llu lsize=%lld psize=%llu </summary>\n",
+               DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrors, DS.NBytesNominal, DS.NBytesAllocated);
             fprintf(WLOG, "</directory>\n");
          } else if (Cmd_LS || Cmd_LSC || Cmd_LSD || Cmd_LSF) {
-            fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu z=%llu space=%llu size=%llu errs=%llu\n",
+            fprintf(WLOG, "S: f=%llu d=%llu s=%lld o=%llu z=%llu lsize=%llu psize=%llu errs=%llu\n",
                DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers,
-               DS.NZeroFiles, DS.NBytesAllocated, DS.NBytesNominal, DS.NStatErrors);
+               DS.NZeroFiles, DS.NBytesNominal, DS.NBytesAllocated, DS.NStatErrors);
          } else if (Cmd_RM && DS.NRemoved) {
             ; // ======== report count?  WS[w_id]->NRemoved += 1;
          }
@@ -3894,6 +3904,8 @@ main(int argc, char *argv[])
       if (WS[w_id] == NULL) break;		// (non-NULL for workers that actually ran)
       GS.NOpendirs += WS[w_id]->NOpendirs;
       GS.NACLs += WS[w_id]->NACLs;
+      GS.NScanned += WS[w_id]->NScanned;
+      GS.NSelected += WS[w_id]->NSelected;
       GS.NRemoved += WS[w_id]->NRemoved;
       GS.NWarnings += WS[w_id]->NWarnings;
       GS.NStatCalls += WS[w_id]->NStatCalls;
@@ -3994,13 +4006,14 @@ main(int argc, char *argv[])
       fprintf(Plog, "%16llu - file%s removed by -rm\n", GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
 
    // @@@ ... Grand total of stat(2)-based stats ...
-   // NStatCalls should equal (NOpendirs + NFiles + NSymlinks + NOthers + NStatErrors) ...
-   fprintf(Plog, "%16llu - stat() call%s in readdir_r loops\n", GS.NStatCalls, (GS.NStatCalls != 1) ? "s" : "");
-   fprintf(Plog, "%16llu -> stat() error%s\n", GS.NStatErrors, (GS.NStatErrors != 1) ? "s" : "");
-   fprintf(Plog, "%16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
-   fprintf(Plog, "%16llu -> file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
-   fprintf(Plog, "%16llu -> symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
-   fprintf(Plog, "%16llu -> other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
+   fprintf(Plog, "%16llu - file%s scanned (%llu stat() errors)\n",
+      GS.NScanned, (GS.NScanned != 1) ? "s" : "", GS.NStatErrors);
+   fprintf(Plog, "%16llu - file%s selected ...\n", GS.NSelected, (GS.NSelected != 1) ? "s" : "");
+   // fprintf(Plog, "%16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
+   fprintf(Plog, "%16llu = director%s\n", GS.NDirs, (GS.NDirs != 1) ? "ies" : "y");
+   fprintf(Plog, "%16llu = file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
+   fprintf(Plog, "%16llu = symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
+   fprintf(Plog, "%16llu = other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
    fprintf(Plog, "%16llu - byte%s allocated (%4.2f GB)\n",
       GS.NBytesAllocated, (GS.NBytesAllocated != 1) ? "s" : "", GS.NBytesAllocated / 1000000000.);
    fprintf(Plog, "%16llu - byte%s nominal (%4.2f GB)\n",
@@ -4050,9 +4063,9 @@ main(int argc, char *argv[])
    // @@@ ... Elapsed time ...
    t_elapsed_sec = (T_FINISH_hires - T_START_hires) / 1000000000.; // convert nanoseconds to seconds
    fprintf(Plog, "%llu files, %s elapsed, %3.0f files/sec\n",
-      GS.NFiles+GS.NDirs+GS.NOthers,
+      GS.NScanned,
       format_ns_delta_t(ebuf, T_START_hires, T_FINISH_hires),
-      (t_elapsed_sec > 0.) ? ((GS.NFiles+GS.NDirs+GS.NOthers)/(t_elapsed_sec)) : 0.);
+      (t_elapsed_sec > 0.) ? ((GS.NScanned)/(t_elapsed_sec)) : 0.);
 
    // @@@ Final sanity checks and warnings @@@
    if (FIFO_POPS != FIFO_PUSHES) {	// (Old debug code)

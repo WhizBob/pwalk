@@ -18,11 +18,13 @@ Version 2.08 - 2019/09 - New features & fixes ...
 	- TODO: FIX: Always emit asccify'd directory and file names in primary outputs
 	- TODO: NEW: -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
 	- FIX: Do not open symlinks under OneFS! (dirent readonly ops)
+	- FIX: Restore Python-based -audit functionality (alpha code is Python-less)
 	- NEW: -select=[no]stubs (OneFS-only) which uses st_flags bit
 	- NEW: -select_[atime|mtime|ctime|birth]=<ref_time>
 	- NEW: -lsf ('full') shows full pathname for every dirent output (ie: 'selected')
 	- -lsc now emits HEX inode numbers (for improved compactness ... with no initial "0x".)
-	- mystat now emits sb.st_flags keywords for non-zero st_flags
+	- Skips now log to pwalk.log rather than worker*.* files
+	- mystat now emits sb.st_flags keywords for non-zero st_flags (useful for seeing stubs, etc)
 Version 2.07 - 2019/02 - New features ...
 	- Option -since=<file> now implicitly enables -select
 	- Added +span option to span filesystems (opposite to find(1) -xdev) (based on stat(2) st_dev)

@@ -13,38 +13,38 @@
 void
 log_audit_keys(void)
 {
-   fprintf(Plog, "@ Column indexes for .audit output files ...\n");
-   fprintf(Plog, "  1.  lock_domain_type - SmartLock domain type;\n");
-   fprintf(Plog, "    'E' - Enterprise\n");
-   fprintf(Plog, "    'C' - Compliance\n");
-   fprintf(Plog, "    '-' - Neither\n");
-   fprintf(Plog, "  2.  lock_status - SmartLock lock status;\n");
-   fprintf(Plog, "    '-' - Not locked\n");
-   fprintf(Plog, "    'C' - Committed	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "    'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "    'X' - eXpired	(READONLY, DELETABLE)\n");
-   fprintf(Plog, "    'O' - Override	(READONLY, NON-DELETABLE)\n");
-   fprintf(Plog, "  3.  w_ref_time - Reference time of worm status enquiry\n");
-   fprintf(Plog, "  4.  st_atime\n");
-   fprintf(Plog, "  5.  st_mtime\n");
-   fprintf(Plog, "  6.  st_ctime\n");
-   fprintf(Plog, "  7.  st_birthtime\n");
-   fprintf(Plog, "  8.  w_ctime\n");
-   fprintf(Plog, "  9.  w_retention_date\n");
-   fprintf(Plog, " 10.  eff_auto_date - Ephemeral AutoCommit date\n");
-   fprintf(Plog, " 11.  eff_retention_type - Basis of effective expiration date;\n");
-   fprintf(Plog, "    '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
-   fprintf(Plog, "    '!' - future (override)\n");
-   fprintf(Plog, "    '<' - past (committed,past)\n");
-   fprintf(Plog, "    '>' - future (committed,future)\n");
-   fprintf(Plog, "    '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
-   fprintf(Plog, "    '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
-   fprintf(Plog, "    'E' - error unexpected case w/ persisted expiration!\n");
-   fprintf(Plog, " 12.  eff_retention_date - Effective expiration date\n");
-   fprintf(Plog, " 13.  st_uid\n");
-   fprintf(Plog, " 14.  st_size\n");
-   fprintf(Plog, " 15.  st_blocks\n");
-   fprintf(Plog, " 16.  \"<ifspath>\"\n");
+   fprintf(Plog, "AUDIT: Column indexes for .audit output files ...\n");
+   fprintf(Plog, "AUDIT:	 1.  lock_domain_type - SmartLock domain type;\n");
+   fprintf(Plog, "AUDIT:	   'E' - Enterprise\n");
+   fprintf(Plog, "AUDIT:	   'C' - Compliance\n");
+   fprintf(Plog, "AUDIT:	   '-' - Neither\n");
+   fprintf(Plog, "AUDIT:	 2.  lock_status - SmartLock lock status;\n");
+   fprintf(Plog, "AUDIT:	   '-' - Not locked\n");
+   fprintf(Plog, "AUDIT:	   'C' - Committed	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'c' - Latent Commit	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'X' - eXpired	(READONLY, DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	   'O' - Override	(READONLY, NON-DELETABLE)\n");
+   fprintf(Plog, "AUDIT:	 3.  w_ref_time - Reference time of worm status enquiry\n");
+   fprintf(Plog, "AUDIT:	 4.  st_atime\n");
+   fprintf(Plog, "AUDIT:	 5.  st_mtime\n");
+   fprintf(Plog, "AUDIT:	 6.  st_ctime\n");
+   fprintf(Plog, "AUDIT:	 7.  st_birthtime\n");
+   fprintf(Plog, "AUDIT:	 8.  w_ctime\n");
+   fprintf(Plog, "AUDIT:	 9.  w_retention_date\n");
+   fprintf(Plog, "AUDIT:	10.  eff_auto_date - Ephemeral AutoCommit date\n");
+   fprintf(Plog, "AUDIT:	11.  eff_retention_type - Basis of effective expiration date;\n");
+   fprintf(Plog, "AUDIT:	   '?' - future (no autocommit, no manually-set value, so not yet ascertainable)\n");
+   fprintf(Plog, "AUDIT:	   '!' - future (override)\n");
+   fprintf(Plog, "AUDIT:	   '<' - past (committed,past)\n");
+   fprintf(Plog, "AUDIT:	   '>' - future (committed,future)\n");
+   fprintf(Plog, "AUDIT:	   '*' - future (uncommitted,ephemeral); based on future autocommit)\n");
+   fprintf(Plog, "AUDIT:	   '=' - forced (uncommitted,tentative); w_retention_date set in WORM state)\n");
+   fprintf(Plog, "AUDIT:	   'E' - error unexpected case w/ persisted expiration!\n");
+   fprintf(Plog, "AUDIT:	12.  eff_retention_date - Effective expiration date\n");
+   fprintf(Plog, "AUDIT:	13.  st_uid\n");
+   fprintf(Plog, "AUDIT:	14.  st_size\n");
+   fprintf(Plog, "AUDIT:	15.  st_blocks\n");
+   fprintf(Plog, "AUDIT:	16.  \"<ifspath>\"\n");
 }
 
 // Shell scripting hints for analyzing .audit files ...
@@ -122,93 +122,93 @@ pwalk_audit_file(char *ifspath, struct stat *st, unsigned crc_val, int w_id)
 
    // @@@ Fetch raw WORM info for OneFS LIN @@@
 
-#ifdef OLD_PYTHON_WAY
-/*OLD*/   // --- Fragile pipe-based Python request/response logic for fetching WORM metadata ---
-/*OLD*/   //
-/*OLD*/   // Python is re-started after every 50,000 calls because it was determined that the
-/*OLD*/   // particular logic being used caused it to fail after about 100,000 calls -- presumeably
-/*OLD*/   // due to heap exhaustion or other such issue. This logic is a 'Software Aging and
-/*OLD*/   // Rejuvenation (SAR) strategy that will not be necessary when this logic is re-coded to
-/*OLD*/   // use OneFS native C-language APIs.
-/*OLD*/
-/*OLD*/   if ((WS[w_id]->NPythonCalls % 50000) == 0) {	// Start or re-start Python co-process
-/*OLD*/      if (WDAT.PYTHON_PIPE) {
-/*OLD*/         fprintf(WDAT.PYTHON_PIPE, "-1\n");	// Signal script to exit()
-/*OLD*/         pclose(WDAT.PYTHON_PIPE);
-/*OLD*/      }
-/*OLD*/      WDAT.PYTHON_PIPE = popen(PYTHON_COMMAND, "r+");
-/*OLD*/      if (VERBOSE > 2) { fprintf(WLOG, "@ <START Python>\n"); fflush(WLOG); }
-/*OLD*/   }
-/*OLD*/   if (WDAT.PYTHON_PIPE == NULL) abend("Cannot start Python co-process!");
-/*OLD*/
-/*OLD*/// +++++ 	dom_get_info_by_lin(st.st_ino, st.st_snapid, NULL, NULL, &worm));
-/*OLD*/// +++++	return worm.w_committed;
-/*OLD*/
-/*OLD*/   sprintf(pycmd, "%llu", st->st_ino);
-/*OLD*/   fprintf(WDAT.PYTHON_PIPE, "%s\n", pycmd);		// Python REQUEST is just inode (LIN)
-/*OLD*/   WS[w_id]->NPythonCalls += 1;
-/*OLD*/   fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE);	// Python RESPONSE
-/*OLD*/   if (VERBOSE > 2) { fprintf(WLOG, "@ << %s", pyout); fflush(WLOG); }
-/*OLD*/
-/*OLD*/   // Parse OneFS WORM info from Python co-process (normally 12 space-delimited columns) ...
-/*OLD*/   //        print 'P',     				-> py_p (literal 'P' always 1st value, else die!)
-/*OLD*/   //        print 0,     				-> py_rc (0 on successful fetch of WORM data)
-/*OLD*/   //        print 0,     				-> py_errno
-/*OLD*/   //        print worm_state['committed'],		-> w_committed
-/*OLD*/   //        print w_ref_time, 				-> w_ref_time
-/*OLD*/   //        print worm_state['ctime'],			-> w_ctime (WORM compliance clock ctime)
-/*OLD*/   //        print worm_state['retention_date'],       	-> w_retention_date
-/*OLD*/   //        print domain_info['autocommit_offset'],	-> w_auto_offset
-/*OLD*/   //        print domain_info['min_offset'],		-> w_min_offset
-/*OLD*/   //        print domain_info['max_offset'],		-> w_max_offset
-/*OLD*/   //        print domain_info['default_offset'],	-> w_def_offset
-/*OLD*/   //        print domain_info['override_retention']	-> w_override_date
-/*OLD*/   // NOTE: 18446744073709551614 == 0x7FFFFFFFFFFFFFFF -- which is default max_retention of FOREVER
-/*OLD*/   //	sscanf() on OneFS will not parse it as a signed long long, so unsigned is used to avoid overflow
-/*OLD*/   py_p = '?';
-/*OLD*/   assert (sizeof(time_t) == 8);
-/*OLD*/   nvals = sscanf(pyout, "%c %i %i %llu %i %llu %llu %llu %llu %llu %llu %llu",
-/*OLD*/      &py_p,
-/*OLD*/      &py_rc,
-/*OLD*/      &py_errno,
-/*OLD*/      &w_ref_time,
-/*OLD*/      &w_committed,
-/*OLD*/      &w_ctime,
-/*OLD*/      &w_retention_date,
-/*OLD*/      &w_auto_offset,
-/*OLD*/      &w_min_offset,
-/*OLD*/      &w_max_offset,
-/*OLD*/      &w_def_offset,
-/*OLD*/      &w_override_date);
-/*OLD*/   if (((nvals != 12) && (nvals < 3)) || py_p != 'P') {	// Should never happen
-/*OLD*/      fflush(WLOG);
-/*OLD*/      fprintf(WLOG, "@ \"%s\"\n", ifspath);
-/*OLD*/      fprintf(WLOG, "@ pycmd: \"%s\"\n", pycmd);
-/*OLD*/      fprintf(WLOG, "@ nvals: %d\n", nvals);
-/*OLD*/      fprintf(WLOG, "@ pyout: %s", pyout);
-/*OLD*/      fflush(WLOG);
-/*OLD*/      while (fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE))	// Drain Python output
-/*OLD*/         fputs(pyout, WLOG);
-/*OLD*/      fflush(WLOG);
-/*OLD*/      abend("Python symbiont error! Unexpected response format!\n");
-/*OLD*/   }
-/*OLD*/
-/*OLD*/   if (VERBOSE > 2) {
-/*OLD*/      fprintf(WLOG, "@ >> %c %d %d %llu %d %llu %llu %llu %llu %llu %llu %llu\n",
-/*OLD*/         py_p, py_rc, py_errno,
-/*OLD*/         w_ref_time,
-/*OLD*/         w_committed, w_ctime, w_retention_date,
-/*OLD*/         w_auto_offset, w_min_offset, w_max_offset, w_def_offset, w_override_date);
-/*OLD*/      fflush(WLOG);
-/*OLD*/   }
-/*OLD*/
-/*OLD*/   // @@@ No SmartLock info; return! ...
-/*OLD*/   if (py_rc) {
-/*OLD*/      WS[w_id]->NPythonErrors += 1;
-/*OLD*/      fprintf(WLOG, "-,%d,0,0,0,0,0,0,0,0,0,0,\"?\",0,%u,%lld,%lld,\"%s\"\n",
-/*OLD*/         py_rc, st->st_uid, st->st_size, st->st_blocks, ifspath);
-/*OLD*/      return;
-/*OLD*/   }
+#if !defined(USE_PCTL2)
+   // --- Fragile pipe-based Python request/response logic for fetching WORM metadata ---
+   //
+   // Python is re-started after every 50,000 calls because it was determined that the
+   // particular logic being used caused it to fail after about 100,000 calls -- presumeably
+   // due to heap exhaustion or other such issue. This logic is a 'Software Aging and
+   // Rejuvenation (SAR) strategy that will not be necessary when this logic is re-coded to
+   // use OneFS native C-language APIs.
+
+   if ((WS[w_id]->NPythonCalls % 50000) == 0) {	// Start or re-start Python co-process
+      if (WDAT.PYTHON_PIPE) {
+         fprintf(WDAT.PYTHON_PIPE, "-1\n");	// Signal script to exit()
+         pclose(WDAT.PYTHON_PIPE);
+      }
+      WDAT.PYTHON_PIPE = popen(PYTHON_COMMAND, "r+");
+      if (VERBOSE > 2) { fprintf(WLOG, "@ <START Python>\n"); fflush(WLOG); }
+   }
+   if (WDAT.PYTHON_PIPE == NULL) abend("Cannot start Python co-process!");
+
+// +++++ 	dom_get_info_by_lin(st.st_ino, st.st_snapid, NULL, NULL, &worm));
+// +++++	return worm.w_committed;
+
+   sprintf(pycmd, "%llu", st->st_ino);
+   fprintf(WDAT.PYTHON_PIPE, "%s\n", pycmd);		// Python REQUEST is just inode (LIN)
+   WS[w_id]->NPythonCalls += 1;
+   fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE);	// Python RESPONSE
+   if (VERBOSE > 2) { fprintf(WLOG, "@ << %s", pyout); fflush(WLOG); }
+
+   // Parse OneFS WORM info from Python co-process (normally 12 space-delimited columns) ...
+   //        print 'P',     				-> py_p (literal 'P' always 1st value, else die!)
+   //        print 0,     				-> py_rc (0 on successful fetch of WORM data)
+   //        print 0,     				-> py_errno
+   //        print worm_state['committed'],		-> w_committed
+   //        print w_ref_time, 				-> w_ref_time
+   //        print worm_state['ctime'],			-> w_ctime (WORM compliance clock ctime)
+   //        print worm_state['retention_date'],       	-> w_retention_date
+   //        print domain_info['autocommit_offset'],	-> w_auto_offset
+   //        print domain_info['min_offset'],		-> w_min_offset
+   //        print domain_info['max_offset'],		-> w_max_offset
+   //        print domain_info['default_offset'],	-> w_def_offset
+   //        print domain_info['override_retention']	-> w_override_date
+   // NOTE: 18446744073709551614 == 0x7FFFFFFFFFFFFFFF -- which is default max_retention of FOREVER
+   //	sscanf() on OneFS will not parse it as a signed long long, so unsigned is used to avoid overflow
+   py_p = '?';
+   assert (sizeof(time_t) == 8);
+   nvals = sscanf(pyout, "%c %i %i %llu %i %llu %llu %llu %llu %llu %llu %llu",
+      &py_p,
+      &py_rc,
+      &py_errno,
+      &w_ref_time,
+      &w_committed,
+      &w_ctime,
+      &w_retention_date,
+      &w_auto_offset,
+      &w_min_offset,
+      &w_max_offset,
+      &w_def_offset,
+      &w_override_date);
+   if (((nvals != 12) && (nvals < 3)) || py_p != 'P') {	// Should never happen
+      fflush(WLOG);
+      fprintf(WLOG, "@ \"%s\"\n", ifspath);
+      fprintf(WLOG, "@ pycmd: \"%s\"\n", pycmd);
+      fprintf(WLOG, "@ nvals: %d\n", nvals);
+      fprintf(WLOG, "@ pyout: %s", pyout);
+      fflush(WLOG);
+      while (fgets(pyout, sizeof(pyout), WDAT.PYTHON_PIPE))	// Drain Python output
+         fputs(pyout, WLOG);
+      fflush(WLOG);
+      abend("Python symbiont error! Unexpected response format!\n");
+   }
+
+   if (VERBOSE > 2) {
+      fprintf(WLOG, "@ >> %c %d %d %llu %d %llu %llu %llu %llu %llu %llu %llu\n",
+         py_p, py_rc, py_errno,
+         w_ref_time,
+         w_committed, w_ctime, w_retention_date,
+         w_auto_offset, w_min_offset, w_max_offset, w_def_offset, w_override_date);
+      fflush(WLOG);
+   }
+
+   // @@@ No SmartLock info; return! ...
+   if (py_rc) {
+      WS[w_id]->NPythonErrors += 1;
+      fprintf(WLOG, "-,%d,0,0,0,0,0,0,0,0,0,0,\"?\",0,%u,%lld,%lld,\"%s\"\n",
+         py_rc, st->st_uid, st->st_size, st->st_blocks, ifspath);
+      return;
+   }
 #else
    // @@@ Get our w_ref_time ...
    assert(localtime_r(&w_ref_time, NULL));

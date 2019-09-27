@@ -38,6 +38,7 @@ static RPT_FIELD pwalk_report_fields[] = {
    { PWget_STAT, "st_birthtime", "%ld", "File birth time" },	// Not accurate over NFS
    { PWget_STAT, "st_uid", "%lu", "File owner UID" },
    { PWget_STAT, "st_gid", "%lu", "File owner GID" },
+   { PWget_STAT, "st_nlink", "%llu", "Number of hard links" },
    { PWget_STAT, "st_blks", "%llu", "File number of 1K blocks allocated" },
    { PWget_STAT, "st_size", "%llu", "File nominal file size" },
    { PWget_STAT, "st_mode", "%03o", "File mode bits (octal)" },
@@ -45,22 +46,26 @@ static RPT_FIELD pwalk_report_fields[] = {
    { PWget_STAT, "dir_sum_st_size", "%llu", "Directory sum of st_size" },
    { PWget_STAT, "dir_sum_st_blks", "%llu", "Directory sum of st_blks" },
 
+   { PWget_OWNER, "owner_uid", "%s", "Owner UID" },
+   { PWget_OWNER, "owner_sid", "%s", "Owner SID" },
    { PWget_OWNER, "owner_name", "%s", "Owner name" },
+   { PWget_OWNER, "group_gid", "%s", "Owner group GID" },
+   { PWget_OWNER, "group_sid", "%s", "Owner group SID" },
    { PWget_GROUP, "group_name", "%s", "Group name" },
-   { PWget_ACL4, "NFS4_ACL_CHEX", "%x", "File ACL4 in hexadecimal format" },
-   { PWget_ACL4, "NFS4_ACL_ONEFS_str", "%s", "File ACL4 in OneFS format (experimental)" },
-   { PWget_STUB, "m_stubbed", "%d", "OneFS: File is stubbed (boolean)" },
+   { PWget_ACL4,  "NFS4_ACL_CHEX", "%x", "File ACL4 in hexadecimal format" },
+   { PWget_ACL4,  "NFS4_ACL_ONEFS_str", "%s", "File ACL4 in OneFS format (experimental)" },
+   { PWget_STUB,  "m_stubbed", "%d", "OneFS: File is stubbed (boolean)" },
 
 //#ifdef __ONEFS__
-   { PWget_SD, "owner_SID", "%s", "OneFS: owner SID" },
-   { PWget_SD, "group_SID", "%s", "OneFS: group SID" },
-   { PWget_WORM, "w_ctime", "%ld", "OneFS: SmartLock WORM ctime (Compliance mode only)" },
-   { PWget_WORM, "w_committed", "%d", "OneFS: SmartLock WORM committed state (boolean)" },
-   { PWget_WORM, "w_expiration_time", "%ld", "OneFS: SmartLock WORM committed state (boolean)" },
-   { PWget_WORM, "w_compliance", "%d", "OneFS: SmartLock Compliance mode (boolean)" },
-   { PWget_WORM, "eff_ctime", "%lu", "OneFS: Effective ctime for SmartLock" },
-   { PWget_WORM, "eff_commit_str", "%c", "OneFS: SmartLock status code [-CcX]" },
-   { PWget_WORM, "eff_expiration_time", "%ld", "OneFS: SmartLock expiration time" },
+   { PWget_SD,    "owner_ondisk", "%s", "Owner ondisk" },
+   { PWget_SD,    "group_ondisk", "%s", "Group name ondisk (SID or GID)" },
+   { PWget_WORM,  "w_ctime", "%ld", "OneFS: SmartLock WORM ctime (Compliance mode only)" },
+   { PWget_WORM,  "w_committed", "%d", "OneFS: SmartLock WORM committed state (boolean)" },
+   { PWget_WORM,  "w_expiration_time", "%ld", "OneFS: SmartLock WORM committed state (boolean)" },
+   { PWget_WORM,  "w_compliance", "%d", "OneFS: SmartLock Compliance mode (boolean)" },
+   { PWget_WORM,  "eff_ctime", "%lu", "OneFS: Effective ctime for SmartLock" },
+   { PWget_WORM,  "eff_commit_str", "%c", "OneFS: SmartLock status code [-CcX]" },
+   { PWget_WORM,  "eff_expiration_time", "%ld", "OneFS: SmartLock expiration time" },
 //#endif
 
 // BEGIN st_flags ...
@@ -97,6 +102,7 @@ static RPT_FIELD pwalk_report_fields[] = {
    { PWget_STAT, "UF_DOS_RO", "%d", "DOS Attribute: READONLY bit" },
    { PWget_STAT, "UF_DOS_SYSTEM", "%d", "DOS Attribute: SYSTEM bit" },
 // END st_flags ...
+
    { 0, NULL, NULL, NULL }
 };
 
