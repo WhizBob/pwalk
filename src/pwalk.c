@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.08beta6"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.08"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -136,6 +136,7 @@
 
 // Additional modules ...
 #include "pwalk.h"		// Global data and forward declarations
+#include "pwalk_audit.h"	// -audit support
 #include "pwalk_onefs.h"	// OneFS-specific logic
 #include "pwalk_report.h"	// Generic reporting
 #include "pwalk_sums.h"		// Checksum generators
@@ -164,10 +165,6 @@
 #define PWALK_PLATFORM "?Unknown Platform?"
 #endif
 
-#define MAX_DEPTH 128
-#define MAX_WORKERS 128
-#define MAX_MKDIR_RETRIES 32
-
 #ifdef SOLARIS
 #define MAX_NAMELEN _PC_NAME_MAX
 #define MAX_PATHLEN MAXPATHLEN
@@ -189,9 +186,6 @@ void directory_scan(int w_id);
 void abend(char *msg);
 void *worker_thread(void *parg);
 
-// @@@ Worker operational status ...
-typedef enum {EMBRYONIC=0, IDLE, BUSY} wstatus_t;	// Worker status
-
 // @@@ Global variables written *only* by the main controlling thread ...
 static int N_WORKERS = 1;		// <N> from "-dop=<N>" defaults to 1
 static int MAX_OPEN_FILES = 0;		// Calculated to compare with getrlimit(NOFILES)
@@ -211,7 +205,6 @@ static int P_ACL_P = 0;			// Show ACL as '+' when +acls specified
 static int P_CRC32 = 0;			// Show CRC32 for -ls, -xml
 static int P_MD5 = 0;			// Show MD5 for -ls, -xml
 static int ST_BLOCK_SIZE = 1024;	// Units for statbuf->st_blocks (-bs=512 option to change)
-static char *PYTHON_COMMAND = NULL;	// For OneFS -audit operation
 static struct {				// UID and EUID are different when pwalk is setuid root
    uid_t uid;
    uid_t euid;
@@ -293,7 +286,6 @@ static int   TARGET_DFDS[MAXPATHS];
 
 // @@@ Global parameters for +tally  ...
 
-#define TALLY_BUCKETS_MAX 64			// MUST be a #define!
 // Args that drive +tally (klooge: runtime parameterize these!) ...
 static char *TALLY_TAG = "tally";               // Default '+tally=<tag>' value
 static char *TALLY_COLUMN_HEADING[] = {
@@ -306,68 +298,10 @@ static count_64 TALLY_BUCKET_SIZE[TALLY_BUCKETS_MAX] = {
    256*1024, 512*1024, 1024*1024, 2048*1024, 4096*1024, 8192*1024, 0
 };
 
-// Accumulators ...
-typedef struct {				// Only used in WS and GS
-   count_64 count[TALLY_BUCKETS_MAX];
-   count_64 size[TALLY_BUCKETS_MAX];
-   count_64 space[TALLY_BUCKETS_MAX];
-} TALLY_BUCKET_COUNTERS;
-
-// parse [tally] args ...
-
-// @@@ Globals foundational to the treewalk logic per se ...
+// @@@ Globals used only in the main code ...
 static FILE *Fpop = NULL, *Fpush = NULL;	// File-based FIFO pointers
-static FILE *Plog = NULL;			// Main logfile output (pwalk.log)
 static count_64 T_START_hires, T_FINISH_hires;	// For Program elapsed time (hi-res)
 static struct timeval T_START_tv;		// Program start time as timeval ...
-
-#define MAXPATHS 64				// Arbitrary limit for [source] or [target] multi-paths
-#define PROGRESS_TIME_INTERVAL 3600/4		// Seconds between progress outputs to log file
-
-// @@@ Statistics blocks ...
-//
-// Statistics are generaly collected in three phases to avoid locking operations;
-//	1. At the per-directory level (DS) - during each directory scan
-//		- We need per-directory subtotals in some outputs (but not for +tally)
-//	2. At the per-worker level (WS) - sub-totaled at the end of each directory scan
-//		- We do not want lock competition between workers while scanning
-//	3. At the pwalk global level (GS) - grand-total summed from worker subtotals at the very end
-//		- Aggregating the grand totals is a lock-less operation because all workers are done
-
-// Statistics: cascades from directory to worker to grand total (global) summary ...
-typedef struct {
-   // Accumulated per-directory ...
-   count_64 NOpendirs;				// Number of opendir() calls
-   count_64 NACLs;				// +acls, +xacls=, or +wacls= # files & dirs w/ ACL processed
-   count_64 NScanned;				// Files scanned (superset of selected files)
-   count_64 NSelected;				// Files selected (when slection option(s) given)
-   count_64 NRemoved;				// Files removed (with -rm)
-   count_64 NStatCalls;				// Number of lstatat() calls on dirents
-   count_64 NDirs;				// ... # that were directories
-   count_64 NFiles;				// ... # that were files
-   count_64 NSymlinks;				// ... # that were symlinks
-   count_64 NOthers;				// ... # that were others
-   count_64 NStatErrs;			// ... # that were errors
-   count_64 NWarnings;				// Scan issues other than stat() failures
-   count_64 NZeroFiles;				// Number of ordinary files of size 0
-   count_64 NHardLinkFiles;			// Number of non-directories with link count > 1
-   count_64 NHardLinks;				// Sum of hard link counts > 1
-   off_t NBytesPhysical;			// Sum of allocated space
-   off_t NBytesLogical;				// Sum of nominal file sizes
-   // Accumulated per-worker ...
-   count_64 READONLY_Zero_Files;		// READONLY zero-length files
-   count_64 READONLY_Opens;			// READONLY file opens
-   count_64 READONLY_Errors;			// READONLY open/read errors
-   count_64 READONLY_CRC_Bytes;			// READONLY CRC bytes read
-   count_64 READONLY_DENIST_Bytes;		// READONLY DENIST bytes read
-   count_64 NPythonCalls;			// Python calls
-   count_64 NPythonErrors;			// Python errors
-   count_64 MAX_inode_Value_Seen;		// Cheap-to-keep (WS, GS) stats
-   count_64 MAX_inode_Value_Selected;
-   TALLY_BUCKET_COUNTERS TALLY_BUCKET;		// +tally counters
-} PWALK_STATS_T;
-static PWALK_STATS_T GS;			// 'GS' is 'Global Stats'
-static PWALK_STATS_T *WS[MAX_WORKERS+1];	// 'WS' is 'Worker Stats', calloc'd (per-worker) on worker startup
 
 // MP mutex for MP-coherency of worker status and FIFO state ...
 static pthread_mutex_t	MP_mutex;
@@ -391,35 +325,6 @@ static pthread_mutex_t	WORKER_mutex[MAX_WORKERS];
 
 // pThreads ...
 pthread_t		WORKER_pthread[MAX_WORKERS];
-
-// @@@ WorkerData is array of structures that contains most worker-indexed private DATA ...
-static struct {				// Thread-specific data (WorkerData[i]) ...
-   // Worker-related ...
-   int			w_id;			// Worker's unique index
-   wstatus_t		status; 		// Worker status
-   FILE			*wlog;			// WLOG output file for this worker
-   FILE			*werr;			// WERR output file for this worker
-   // Co-process & xacls support ...
-   FILE 		*PYTHON_PIPE;		// Pipe for -audit Python symbiont
-   FILE 		*WACLS_PIPE;		// Pipe for +wacls= process
-   FILE 		*XACLS_BIN_FILE;	// File for +xacls=bin output
-   FILE 		*XACLS_CHEX_FILE;	// File for +xacls=chex output
-   FILE 		*XACLS_NFS_FILE;	// File for +xacls=nfs output
-   FILE 		*XACLS_ONEFS_FILE;	// File for +xacls=onefs output
-   // Pointers to runtime-allocated buffers ...
-   char			*DirPath;		// Fully-qualified directory to process
-   struct dirent	*Dirent;		// Buffer for readdir_r()
-   void			*SOURCE_BUF_P;		// For -cmp source
-   void			*TARGET_BUF_P;		// For -cmp source
-} WorkerData[MAX_WORKERS+1];			// klooge: s/b dynamically-allocated f(N_WORKERS) */
-
-// Convenience MACROs for worker's thread-specific values ...
-// ... so 'fprintf(WLOG' becomes 'fprintf(WorkerData[w_id].wlog' ...
-// ... which of course requires a context in which 'w_id' is defined.
-#define WDAT WorkerData[w_id]		// Coding convenience for w_id's worker data
-#define WLOG WDAT.wlog			// Coding convenience for w_id's output FILE*
-// Per-worker .err files get created only when needed ...
-#define WERR (WDAT.werr ? WDAT.werr : worker_err_create(w_id))	// Coding convenience for w_id's error FILE*
 
 void
 dump_thread(char *name, pthread_mutex_t *mutex)
@@ -856,21 +761,6 @@ get_owner_group(struct stat *sb, char *owner, char *group, char *owner_sid, char
       } else {
          strcpy(group, "root");
       }
-   }
-}
-
-void
-pwalk_format_time_t(const time_t *date_p, char *output, const int output_size, const char *format)
-{
-   struct tm tmp_tm;
-
-   if (*date_p == 0) {
-      strcpy(output, "0");
-   } else if (format) {
-      localtime_r(date_p, &tmp_tm);
-      strftime(output, output_size - 1, format, &tmp_tm);
-   } else {
-      sprintf(output, "%ld", *date_p);
    }
 }
 
@@ -1865,21 +1755,11 @@ pwalk_fix_times(char *filename, char *filepath, struct stat *ssbp, int w_id)
       if (rc) fprintf(WLOG, "# FAILED!\n");
    }
 }
-
-
-// @@@ SECTION: pwalk -audit support @@@
-
-// The bulk of the pwalk -audit logic is conditionally included inline here.
-
-#if PWALK_AUDIT // OneFS only
-#include "pwalk_audit.h"
-#endif
-
-// @@@ SECTION: pwalk -cmp support @@@
+// @@@ SECTION: pwalk -cmp support @@@
 
 // KEYWORD   C  MASK VALUE
 // -------------------------
-// <always>  -  CMP_equal
+// <always>  -  CMP_equal (only reported for directories)
 // <always>  !  CMP_error
 // <always>  E  CMP_notfound
 // <always>  T  CMP_type
@@ -2631,7 +2511,7 @@ redact_path(char *relpath_redacted, char *relpath, ino_t relpath_inode, int w_id
    // Count PATHSEPCHRs, collecting pointers to them ...
    for (np=0, pi = relpath_redacted; *pi; pi++) {
       if (*pi == PATHSEPCHR) p_sep[np++] = pi;
-      assert (np < MAX_DEPTH);							// klooge: crude
+      assert (np < MAX_PATH_DEPTH);				// klooge: crude
    }
    inode[np] = relpath_inode;
    //DEBUG fprintf(stderr, "@@ \"%s\" (ino=%llx)\n-> \"%s\" (np=%d)\n", relpath, relpath_inode, relpath_redacted, np);
@@ -2977,7 +2857,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          have_stat = 1;
 
          // Redaction ...
-         if (Opt_REDACT) sprintf(RedactedFileName, "%lld", dirent_sb.st_ino);
+         if (Opt_REDACT) sprintf(RedactedFileName, "%llx", dirent_sb.st_ino);
          format_mode_bits(mode_str, dirent_sb.st_mode);
 
          // Make up for these bits not always being set correctly (eg: over NFS) ...
@@ -3117,12 +2997,11 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          DS.NBytesPhysical += bytes_allocated = dirent_sb.st_blocks * ST_BLOCK_SIZE;
       }
 
-      // @@@ GATHER (dirent): Owner name & group name ...
+      // @@@ GATHER/dirent: Owner name & group name ...
       get_owner_group(&dirent_sb, owner_name, group_name, owner_sid, group_sid);
 
-      // @@@ GATHER (dirent): '+tally' accumulation ...
-      if (Cmd_TALLY)
-         pwalk_tally_file(&dirent_sb, w_id);
+      // @@@ META/dirent: '+tally' accumulation from stat() data ...
+      if (Cmd_TALLY) pwalk_tally_file(&dirent_sb, w_id);
 
       // @@@ ACTION/dirent: READONLY operations (+crc, +md5, +denist, etc) ...
       // Multiple purposes will be served from the open file handle ...
@@ -3136,7 +3015,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          if (dirent_sb.st_size == 0) WS[w_id]->READONLY_Zero_Files += 1;
          else openit = 1;
       }
-      if (!openit) goto dirent_meta_munge;
+      if (!openit) goto dirent_meta_munge;	// ------< BEGIN OPERATIONS REQUIRING A OPEN() >---------
 
       // We do NOT follow symlinks, ever ...
       // NOTE: OneFS has O_OPENLINK to explicitly permit opening a symlink!
@@ -3183,6 +3062,8 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
 
       // @@@ ACTION/dirent: End READONLY operations and close() file ...
       close(fd);	// klooge: SHOULD check rc, but WTF, it's READONLY
+
+      // ------------------------------------------------< END OPERATIONS REQUIRING A OPEN() >-----------
 
 dirent_meta_munge: // @@@
       // @@@ OUTPUT (dirent): Per-child information & added processing @@@
@@ -3231,10 +3112,7 @@ dirent_meta_munge: // @@@
             (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size,
              REDACT_FileName, ns_stat_s, crc_str);
       } else if (Cmd_LSC) {		// -lsc
-         if (!S_ISDIR(dirent_sb.st_mode)) {
-            if (Opt_REDACT) fprintf(WLOG, "%c %s\n", mode_str[0], REDACT_FileName);
-            else            fprintf(WLOG, "%c %llx %s\n", mode_str[0], dirent_sb.st_ino, FileName);
-         }
+         fprintf(WLOG, "%c %s\n", mode_str[0], REDACT_FileName);
       } else if (Cmd_LSF) {		// -lsf
          fprintf(WLOG, "%c %s\n", mode_str[0], RelPathName);
       } else if (Cmd_XML) {		// -xml
@@ -3255,7 +3133,7 @@ dirent_meta_munge: // @@@
          }
       } else if (Cmd_AUDIT) {		// -audit
 #if PWALK_AUDIT // OneFS only
-         pwalk_audit_file(RelPathName, &dirent_sb, crc_val, w_id);
+         pwalk_audit_file(RelPathName, &dirent_sb, w_id);
 #else
          abend("-audit not supported");
 #endif // PWALK_AUDIT
@@ -3965,7 +3843,7 @@ main(int argc, char *argv[])
 
    // @@@ ... -audit decoder ring maps columns of .audit files ...
 #if PWALK_AUDIT // OneFS only
-   if (Cmd_AUDIT) log_audit_keys();
+   if (Cmd_AUDIT) pwalk_audit_keys();
 #endif // PWALK_AUDIT
 
    // @@@ ...  OS-level pwalk process stats ...

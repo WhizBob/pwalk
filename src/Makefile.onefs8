@@ -2,7 +2,7 @@ all: pwalk wacls hacls chexcmp touch3 mystat pwalk_ls_cat
 
 BINDIR=../bin/onefs8
 // NOTE: pwalk_audit.h is a dependency, but gets conditionally #include'd inline by pwalk.c
-PWALK_C=pwalk.c pwalk_onefs.c pwalk_report.c pwalk_sums.c
+PWALK_C=pwalk.c pwalk_audit.c pwalk_onefs.c pwalk_sums.c pwalk_report.c 
 PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
 
 PWALK_LIBS=-lisi_persona -lisi_acl -lisi_util -lm -lrt -lpthread
