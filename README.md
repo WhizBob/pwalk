@@ -24,8 +24,8 @@ tool for various operations on highly-scaled filesystems, including but not limi
 	- file heirarchy comparisons with -cmp
 	- being a framework for custom-coded tasks requiring a high-speed treewalker foundation
 
-pwalk code management was moved to Github as a private project on September 29, 2017, and subsequently
-made public in.  It is not intended that anyone come into possession of this code without first
+pwalk code management was moved to Github as a private project on September 29, 2017, and later
+made public.  It is not intended that anyone come into possession of this code without first
 collaborating with the author, Bob Sneed.
 
 *** DISCLAIMERS ***
@@ -46,16 +46,16 @@ collaborating with the author, Bob Sneed.
 
 Documentation for pwalk is spread across a number of documents;
 
-	- pwalk_slides_<version>.pptx (Powerpoint) - the best basic orientation to pwalk
-	- pwalk_acls_<version>.docx (Word) - detailed discussion of ACL-handling features
+	- pwalk_slides.pptx (Powerpoint) - the best basic orientation to pwalk
+	- pwalk_acls.docx (Word) - detailed discussion of ACL-handling features
 		and associated utility programs
-	- pwalk_manpage_<version>.docx (Word) - preliminary manpage (very prelilminary)
-	- nfs4_perms_cribsheet_<version>.xlsx (Excel) - 'secret decoder ring' for permissions
+	- pwalk_manpage.docx (Word) - preliminary manpage (VERY prelilminary)
+	- acl_decoder.xlsx (Excel) - 'secret decoder ring' for ACL permissions
 
-Both the code and the documentation are maintained in a perpetual state of being incomplete
+Both the code and the documentation are maintained in a perpetual state of incompleteness
 and begging for some cleanup and consolidation work!
 
-*** Distribution Format ***
+*** Older Distribution Method ***
 
 pwalk is often distributed as an E-Mail attachment in a uuencoded gzip'ed tarball format
 ('bundle') which has been designed to get past most E-Mail filters. The C-shell script
