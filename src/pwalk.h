@@ -176,27 +176,27 @@ extern struct {
 //	3. At the pwalk global level (GS) - grand-total summed from worker subtotals at the very end
 //		- Aggregating the grand totals is a lock-less operation because all workers are done
 
-// Statistics: cascades from directory to worker to grand total (global) summary ...
+// Statistics: cascades from directory (DS) to worker (WS) to grand total (GS) summary ...
 typedef struct {
    // Accumulated per-directory ...
    count_64 NOpendirs;				// Number of opendir() calls
-   count_64 NACLs;				// +acls, +xacls=, or +wacls= # files & dirs w/ ACL processed
    count_64 NScanned;				// Files scanned (superset of selected files)
-   count_64 NSelected;				// Files selected (when slection option(s) given)
+   count_64 NSelected;				// Files selected (when selection option(s) given)
    count_64 NRemoved;				// Files removed (with -rm)
+   count_64 NACLs;				// +acls, +xacls=, or +wacls= # files & dirs w/ ACL processed
    count_64 NStatCalls;				// Number of lstatat() calls on dirents
    count_64 NDirs;				// ... # that were directories
    count_64 NFiles;				// ... # that were files
    count_64 NSymlinks;				// ... # that were symlinks
    count_64 NOthers;				// ... # that were others
-   count_64 NStatErrs;			// ... # that were errors
+   count_64 NStatErrs;				// ... # that were errors
    count_64 NWarnings;				// Scan issues other than stat() failures
    count_64 NZeroFiles;				// Number of ordinary files of size 0
    count_64 NHardLinkFiles;			// Number of non-directories with link count > 1
    count_64 NHardLinks;				// Sum of hard link counts > 1
    off_t NBytesPhysical;			// Sum of allocated space
    off_t NBytesLogical;				// Sum of nominal file sizes
-   // Accumulated per-worker ...
+   // Accumulated per-worker for selected() files ...
    count_64 READONLY_Zero_Files;		// READONLY zero-length files
    count_64 READONLY_Opens;			// READONLY file opens
    count_64 READONLY_Errors;			// READONLY open/read errors

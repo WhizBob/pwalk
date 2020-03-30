@@ -1,7 +1,8 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
+
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.08"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.09b1"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -249,20 +250,38 @@ static char *WACLS_CMD = NULL;  		// For +wacls= arg
 #define CMP_BUFFER_SIZE 128*1024		// -cmp buffer sizes
 
 // For selection-related options ...
-static int SELECT_ENABLED = 0;			// Any -select option(s) specified
-static int SELECT_FAKE = 0;			// -select=fake specified
+static int SELECT_OPTIONS = 0;			// Any of the following -select option(s) specified ...
+#define SELECT_HARDCODED	0x0000001	// -select specified
+#define SELECT_LFN		0x0000002	// -select=lfn specified
+#define SELECT_STUBS		0x0000004	// -select=stubs specified (OneFS only)
+#define SELECT_NOSTUBS		0x0000008	// -select=nostubs specified (OneFS only)
+#define SELECT_FAKE		0x0000010	// -select=fake specified (OneFS only)
+#define SELECT_SINCE_TIME	0x0000020	// -since= specified
+#define SELECT_SINCE_ATIME	0x0000040	// -since_atime= specified
+#define SELECT_SINCE_MTIME	0x0000080	// -since_mtime= specified
+#define SELECT_SINCE_CTIME	0x0000100	// -since_ctime= specified
+#define SELECT_SINCE_BIRTH	0x0000200	// -since_birth= specified
+#define SELECT_NOTSINCE_TIME	0x0000400	// -notsince= specified
+#define SELECT_NOTSINCE_ATIME	0x0000800	// -notsince_atime= specified
+#define SELECT_NOTSINCE_MTIME	0x0001000	// -notsince_mtime= specified
+#define SELECT_NOTSINCE_CTIME	0x0002000	// -notsince_ctime= specified
+#define SELECT_NOTSINCE_BIRTH	0x0004000	// -notsince_birth= specified
 static uid_t FAKE_UID_LO = 1000000;		// OneFS auto-gen ranges ...
 static uid_t FAKE_UID_HI = 4000000;
 static gid_t FAKE_GID_LO = 1000000;
 static gid_t FAKE_GID_HI = 4000000;
-static int SELECT_STUBS = 0;			// -select=stubs specified
-static int SELECT_NOSTUBS = 0;			// -select=nostubs specified
-// For -since_*= ... <ref_time> is integer value or reference pathname ...
-static time_t SELECT_SINCE_TIME = 0;		// -since=<ref_time> (compared to mtime and ctime)
-static time_t SELECT_SINCE_ATIME = 0;		// -since_atime=<ref_time> 
-static time_t SELECT_SINCE_MTIME = 0;		// -since_mtime=<ref_time> 
-static time_t SELECT_SINCE_CTIME = 0;		// -since_ctime=<ref_time> 
-static time_t SELECT_SINCE_BIRTH = 0;		// -since_birth=<ref_time> 
+
+// For -[not]since_*= options ... <ref_time> is integer value or reference pathname ...
+static time_t SELECT_SINCE_TIME_T = 0;		// -since=<ref_time> (compared to mtime and ctime)
+static time_t SELECT_SINCE_ATIME_T = 0;		// -since_atime=<ref_time> 
+static time_t SELECT_SINCE_MTIME_T = 0;		// -since_mtime=<ref_time> 
+static time_t SELECT_SINCE_CTIME_T = 0;		// -since_ctime=<ref_time> 
+static time_t SELECT_SINCE_BIRTH_T = 0;		// -since_birth=<ref_time> 
+static time_t SELECT_NOTSINCE_TIME_T = 0;	// -notsince=<ref_time> (compared to mtime and ctime)
+static time_t SELECT_NOTSINCE_ATIME_T = 0;	// -notsince_atime=<ref_time> 
+static time_t SELECT_NOTSINCE_MTIME_T = 0;	// -notsince_mtime=<ref_time> 
+static time_t SELECT_NOTSINCE_CTIME_T = 0;	// -notsince_ctime=<ref_time> 
+static time_t SELECT_NOTSINCE_BIRTH_T = 0;	// -notsince_birth=<ref_time> 
 
 // Multipath variables ...
 #define MAXPATHS 64
@@ -466,11 +485,19 @@ usage(void)
    printf("	+md5  (COMING SOON!)	// show MD5 for each file (READS ALL FILES!)\n");
    printf("	+tstat			// show hi-res timing statistics in some outputs\n");
    printf("   File selection <option> values are:	(<ref_time> is <epoch_time> | ?time(<ref_file>)\n");
+   printf("	+span			// include directories that span filesystems (OFF by default)\n");
+   printf("	+.ifsvar		// include .ifsvar directories (OFF by default)\n");
+   printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("	-select			// select files with hardcoded selection criteria\n");
 #if defined(__ONEFS__)
-   // printf("	-select=fake		// select files with persisted fake IDs (OneFS)\n");
+   // printf("	-select=fake		// select files with persisted fake IDs (OneFS) DEVELOPMENTAL\n");
    printf("	-select=[no]stubs	// select files with or without stubs (OneFS)\n");
 #endif
+   // `MAXNAMLEN' is the BSD name for what POSIX calls `NAME_MAX'.
+   // /usr/include/stdio.h:   FILENAME_MAX	Maximum length of a filename.
+   // /usr/include/dirent.h:#    define MAXNAMLEN	NAME_MAX
+   printf("	-select=lfn		// select files with long filenames > 255 bytes (%d max)\n", FILENAME_MAX);
+   printf("	// NOTE: prefix -since* options with 'not' for a '<=' compare; e.g. '-notsince='\n");
    printf("	-since=<ref_time>	// select files with mtime or ctime > mtime(<ref_time>)\n");
    printf("	-since_atime=<ref_time>	// select files with atime > atime(<ref_time>)\n");
    printf("	-since_mtime=<ref_time>	// select files with mtime > mtime(<ref_time>)\n");
@@ -478,9 +505,6 @@ usage(void)
 #if defined(__ONEFS__) || defined(__APPLE__)
    printf("	-since_birth=<ref_time>	// select files with birthtime > birthtime(<ref_time>)\n");
 #endif
-   printf("	+.ifsvar		// include .ifsvar directories (OFF by default)\n");
-   printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
-   printf("	+span			// include directories that span filesystems (OFF by default)\n");
    exit(-1);
 }
 
@@ -1371,7 +1395,12 @@ parse_pfile(char *parfile)
    enum { NONE, TARGET, SOURCE, SELECT, OUTPUT, TALLY } section = NONE;
 
    // Read -pfile=<file> and process entirely into memory ...
-   assert ((fd = open(parfile, O_RDONLY)) >= 0);
+   fd = open(parfile, O_RDONLY);
+   if (fd < 0) {
+      fprintf(stderr, "FATAL: Cannot read -pfile= file!\n");
+      exit(-1);
+   }
+   // klooge: primitive exception handling!
    assert (fstat(fd, &sb) == 0);			// get st_size from stat()
    assert ((fsize = sb.st_size) <= 8191);		// arbitrary sanity check
    assert ((buf = calloc(1, fsize+1)));
@@ -2063,51 +2092,76 @@ pwalk_tally_output()
 // selected() is the execute-time file-selection logic. Files and directories which return FALSE
 // will not be output.
 //
-// NOTE: st_birthtime will NOT be accurate on NFS client! It will probably be a copy of ctime! So, avoid
-// trying to select on it unless native to OneFS.
+// NOTE: st_birthtime will NOT be accurate on Linux NFS client! It will probably be a copy of ctime!
+// So, avoid trying to select on it unless native to OneFS or macOS SMB.
 
 int
-selected(char *filename, struct stat *sb)
+selected(char *filename, struct dirent *dirent, struct stat *sb)
 {
-   if (SELECT_ENABLED) {	// TEMPLATE CODE ...
-      // Blacklist / exclude ...
+   int d_namlen;		// strlen() or d_namlen
+
+   if (SELECT_OPTIONS&SELECT_HARDCODED) {	// ### PUT CUSTOM SELECT CODE HERE! ###
+      // Excludes return 0 before includes are evaluated ...
+      // CAUTION: default is to exclude!
       // if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
    
-      // Whitelist / includes ..
-      // if (!S_ISREG(sb->st_mode)) return (1);		// Include all non-ordinary files
-      // if (strstr(filename, "|")) return (1);		// Include names with '|'
-      // if (sb->st_uid == 0) return (1);		// Include only root-owned files
-   
-      // regexp() example ...
+      // Includes ..
+      // if (!S_ISREG(sb->st_mode)) return (1);		// Select *only* non-ordinary files
+      // if (strstr(filename, "|")) return (1);		// Select *only* names with embedded '|'
+      // if (sb->st_uid == 0) return (1);		// Select *only* root-owned files
+
+      if (sb->st_size >= 10485760) return(1);		// Select files >= 10 MB ### CUSTOM ###
    }
 
+   // -select=fake (Files/dirs with persisted UID or GID in OneFS 'fake' range)
 #if defined(__ONEFS__)
-   // Files/dirs with persisted UID or GID in fake range ...
-   if (SELECT_FAKE) {
+   if (SELECT_OPTIONS&SELECT_FAKE) {
       // Get SD ...
 // xxxxx(&od_own_is_uid, &od_grp_is_gid
-      // If 
       if ((sb->st_uid >=  FAKE_UID_LO && sb->st_uid <= FAKE_UID_HI) ||
-          (sb->st_gid >=  FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI))
-
-      ;
+          (sb->st_gid >=  FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI)) return(1);
    }
 #endif
 
-   // Timestamp-based selections ...
-   if (SELECT_SINCE_TIME &&
-       ((sb->st_ctimespec.tv_sec > SELECT_SINCE_TIME) ||
-        (sb->st_mtimespec.tv_sec > SELECT_SINCE_TIME))) return (1);
-   if (SELECT_SINCE_ATIME && (sb->st_atimespec.tv_sec > SELECT_SINCE_ATIME)) return (1);
-   if (SELECT_SINCE_MTIME && (sb->st_mtimespec.tv_sec > SELECT_SINCE_MTIME)) return (1);
-   if (SELECT_SINCE_CTIME && (sb->st_ctimespec.tv_sec > SELECT_SINCE_CTIME)) return (1);
+   // -[not]since*= selections ...
+   if (SELECT_OPTIONS&SELECT_SINCE_TIME &&
+       ((sb->st_ctimespec.tv_sec > SELECT_SINCE_TIME_T) ||
+        (sb->st_mtimespec.tv_sec > SELECT_SINCE_TIME_T))) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_ATIME && (sb->st_atimespec.tv_sec > SELECT_SINCE_ATIME_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_MTIME && (sb->st_mtimespec.tv_sec > SELECT_SINCE_MTIME_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_CTIME && (sb->st_ctimespec.tv_sec > SELECT_SINCE_CTIME_T)) return (1);
 #if defined(__ONEFS__) || defined(__APPLE__)
-   if (SELECT_SINCE_BIRTH && (sb->st_birthtimespec.tv_sec > SELECT_SINCE_BIRTH)) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_BIRTH && (sb->st_birthtimespec.tv_sec > SELECT_SINCE_BIRTH_T)) return (1);
+#endif
+   // Note that for -notsince, per De Morgan’s Law, the OR turns into an AND, and the
+   // birthtime and atime are also taken into consideration.
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_TIME && (
+        (sb->st_ctimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+        (sb->st_atimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+#if defined(__ONEFS__) || defined(__APPLE__)
+        (sb->st_birthtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+#endif
+        (sb->st_mtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T)
+       )) return (1);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_ATIME && (sb->st_atimespec.tv_sec <= SELECT_NOTSINCE_ATIME_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_MTIME && (sb->st_mtimespec.tv_sec <= SELECT_NOTSINCE_MTIME_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_CTIME && (sb->st_ctimespec.tv_sec <= SELECT_NOTSINCE_CTIME_T)) return (1);
+#if defined(__ONEFS__) || defined(__APPLE__)
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_BIRTH && (sb->st_birthtimespec.tv_sec <= SELECT_NOTSINCE_BIRTH_T)) return (1);
 #endif
 
+   // -select=lfn ...
+#if defined(__LINUX__)
+   d_namlen = strlen(dirent->d_name);
+#else
+   d_namlen = dirent->d_namlen;
+#endif
+   if (SELECT_OPTIONS&SELECT_LFN && (d_namlen > 255)) return (1);
+
+   // -select=[no]stubs ...
 #if defined(__ONEFS__)
-   if (SELECT_STUBS && (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
-   if (SELECT_NOSTUBS && !(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
+   if (SELECT_OPTIONS&SELECT_STUBS && (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
+   if (SELECT_OPTIONS&SELECT_NOSTUBS && !(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
 #endif
 
    // Default is NOT selected ...
@@ -2878,7 +2932,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
 
       // @@@ ACTION(s)/dirent: Depends on whether or not dirent is selected(), whether
       // it's a directory or not, and the <primary_mode> or pwalk operation.
-      dirent_selected = SELECT_ENABLED ? selected(RelPathName, &dirent_sb) : 1;
+      dirent_selected = (SELECT_OPTIONS == 0) ? 1 : selected(RelPathName, pdirent, &dirent_sb);
       if (dirent_selected) n_dirent_selected += 1;	// "output it"
       dirent_isdir = S_ISDIR(dirent_sb.st_mode);
 
@@ -2890,7 +2944,6 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
 
       // IMPORTANT: We can now skip non-selected() non-directories ...
       if (!dirent_selected && !dirent_isdir) goto next_dirent;
-
 
       // @@@ ACTION/dirent: -rm selected() non-directories only unless -dryrun ...
       // NOTE: The .sh files created by -rm would NOT be safely executable, because a failed 'cd'
@@ -3022,7 +3075,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
       if ((fd = openat(SOURCE_DFD(w_id), RelPathName, O_RDONLY|O_NOFOLLOW, 0)) < 0) {
          WS[w_id]->READONLY_Errors += 1;
          assert(strerror_r(errno, errstr, sizeof(errstr)) == 0);
-         fprintf(WERR, "ERROR: Cannot READONLY open() \"%s\" (%s)\n", AbsPathName, errstr);
+         fprintf(WERR, "ERROR: Cannot READONLY open(\"%s\") (%s)\n", AbsPathName, errstr);
          goto dirent_meta_munge;
       }
       WS[w_id]->READONLY_Opens += 1;				// READONLY file is now open ...
@@ -3201,7 +3254,7 @@ dir_summary:
       // @@@ OUTPUT/directory_start: klooge (repeated code) for *empty* directories ...
       // Empty directories never have a dirent to trigger the directory start reporting.
       // Non-empty directories will have reported the directory start in the dirent loop.
-      if (!directory_reported && !SELECT_ENABLED) {
+      if ((SELECT_OPTIONS == 0) && !directory_reported) {
          if (Cmd_LS || Cmd_LSC || Cmd_LSD || Cmd_LSF) {
             if (w_id || ftell(WLOG)) fprintf(WLOG, "\n");
             fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
@@ -3214,7 +3267,7 @@ dir_summary:
       }
 
       // @@@ OUTPUT/directory_exit: End-of-directory output ...
-      if (!SELECT_ENABLED || (SELECT_ENABLED && n_dirent_selected > 0)) {
+      if ((SELECT_OPTIONS == 0) || (SELECT_OPTIONS && n_dirent_selected > 0)) {
          if (Cmd_XML) {
             fprintf(WLOG, "<summary> f=%llu d=%llu s=%llu o=%llu errs=%llu lsize=%lld psize=%llu </summary>\n",
                DS.NFiles, DS.NDirs, DS.NSymlinks, DS.NOthers, DS.NStatErrs, DS.NBytesLogical, DS.NBytesPhysical);
@@ -3310,12 +3363,12 @@ arg_count_ch(char *arg, char ch)
 
 // @@@ SECTION: Command-line argument processing @@@
 
-// get_since_time() - Process -since[_*]=<ref_time> argument ...
+// get_since_time() - Process -[not]since[_*]=<ref_time> argument ...
 
 void
 get_since_time(char *option)
 {
-   struct stat sb;
+   struct stat ref_sb;
    char *p_arg, *endptr;
    time_t epoch_time;
    int rc, badarg = 0;
@@ -3323,34 +3376,54 @@ get_since_time(char *option)
    if ((p_arg = strchr(option, '=')) == NULL) {	// must have '='!
       badarg = 1;
    } else {
-      p_arg++;
+      p_arg++;	// Pointing to an integer?
       epoch_time = strtol(p_arg, &endptr, 0);
-      if (endptr != p_arg && *endptr == '\0') {	// if value is an integer, treat as reference time_t ...
-         if (epoch_time == 0) {
-            badarg = 1;
-         } else {
-            sb.st_atimespec.tv_sec = epoch_time;
-            sb.st_mtimespec.tv_sec = epoch_time;
-            sb.st_ctimespec.tv_sec = epoch_time;
-            sb.st_birthtimespec.tv_sec = epoch_time;
-         }
-      } else if ((rc = stat(p_arg, &sb))) {	// otherwise, assume value is a reference file ...
+      if (endptr != p_arg && *endptr == '\0') {	// if value is an integer, treat as reference epoch time ...
+         ref_sb.st_atimespec.tv_sec = epoch_time;
+         ref_sb.st_mtimespec.tv_sec = epoch_time;
+         ref_sb.st_ctimespec.tv_sec = epoch_time;
+         ref_sb.st_birthtimespec.tv_sec = epoch_time;
+      } else if ((rc = stat(p_arg, &ref_sb))) {	// else, assume value is a reference file ...
+         fprintf(stderr, "ERROR: Cannot stat(\"%s\")!\n", p_arg);
          badarg = 1;
       }
    }
    
-   if (!badarg) {
-      if (strncmp(option, "-since=", 7) == 0) SELECT_SINCE_TIME = sb.st_mtimespec.tv_sec;
-      else if (strncmp(option, "-since_atime=", 13) == 0) SELECT_SINCE_ATIME = sb.st_atimespec.tv_sec;
-      else if (strncmp(option, "-since_mtime=", 13) == 0) SELECT_SINCE_MTIME = sb.st_mtimespec.tv_sec;
-      else if (strncmp(option, "-since_ctime=", 13) == 0) SELECT_SINCE_CTIME = sb.st_ctimespec.tv_sec;
-      else if (strncmp(option, "-since_birth=", 13) == 0) SELECT_SINCE_BIRTH = sb.st_birthtimespec.tv_sec;
-      else badarg = 1;
-   }
-
    if (badarg) {
       fprintf(stderr, "ERROR: \"%s\" is invalid!\n", option);
       exit(-1);
+   }
+
+   if (strncmp(option, "-since=", 7) == 0) {
+      SELECT_OPTIONS |= SELECT_SINCE_TIME;
+      SELECT_SINCE_TIME_T = ref_sb.st_mtimespec.tv_sec;
+   } else if (strncmp(option, "-since_atime=", 13) == 0) {
+      SELECT_OPTIONS |= SELECT_SINCE_ATIME;
+      SELECT_SINCE_ATIME_T = ref_sb.st_atimespec.tv_sec;
+   } else if (strncmp(option, "-since_mtime=", 13) == 0) {
+      SELECT_OPTIONS |= SELECT_SINCE_MTIME;
+      SELECT_SINCE_MTIME_T = ref_sb.st_mtimespec.tv_sec;
+   } else if (strncmp(option, "-since_ctime=", 13) == 0) {
+      SELECT_OPTIONS |= SELECT_SINCE_CTIME;
+      SELECT_SINCE_CTIME_T = ref_sb.st_ctimespec.tv_sec;
+   } else if (strncmp(option, "-since_birth=", 13) == 0) {
+      SELECT_OPTIONS |= SELECT_SINCE_BIRTH;
+      SELECT_SINCE_BIRTH_T = ref_sb.st_birthtimespec.tv_sec;
+   } else if (strncmp(option, "-notsince=", 10) == 0) {
+      SELECT_OPTIONS |= SELECT_NOTSINCE_TIME;
+      SELECT_NOTSINCE_TIME_T = ref_sb.st_mtimespec.tv_sec;
+   } else if (strncmp(option, "-notsince_atime=", 16) == 0) {
+      SELECT_OPTIONS |= SELECT_NOTSINCE_ATIME;
+      SELECT_NOTSINCE_ATIME_T = ref_sb.st_atimespec.tv_sec;
+   } else if (strncmp(option, "-notsince_mtime=", 16) == 0) {
+      SELECT_OPTIONS |= SELECT_NOTSINCE_MTIME;
+      SELECT_NOTSINCE_MTIME_T = ref_sb.st_mtimespec.tv_sec;
+   } else if (strncmp(option, "-notsince_ctime=", 16) == 0) {
+      SELECT_OPTIONS |= SELECT_NOTSINCE_CTIME;
+      SELECT_NOTSINCE_CTIME_T = ref_sb.st_ctimespec.tv_sec;
+   } else if (strncmp(option, "-notsince_birth=", 16) == 0) {
+      SELECT_OPTIONS |= SELECT_NOTSINCE_BIRTH;
+      SELECT_NOTSINCE_BIRTH_T = ref_sb.st_birthtimespec.tv_sec;
    }
 }
 
@@ -3471,21 +3544,23 @@ process_arglist(int argc, char *argv[])
          } 
          PWdebug += nc;
          fprintf(stderr, "DEBUG: PWdebug=%d\n", PWdebug);
-      // Selection-related <option> values ...
+      // -select* <option> values ...
       } else if (strcmp(arg, "-select") == 0) {		// Hard-coded -select criteria (klooge)
-         SELECT_ENABLED = 1;
+         SELECT_OPTIONS |= SELECT_HARDCODED;
+      } else if (strcmp(arg, "-select=lfn") == 0) {	// Long file names
+         SELECT_OPTIONS |= SELECT_LFN;
 #if defined(__ONEFS__)					// Only on OneFS native!
-      //} else if (strcmp(arg, "-select=fake") == 0) {
-      //   SELECT_ENABLED = 1; SELECT_FAKE = 1;
+      } else if (strcmp(arg, "-select=fake") == 0) {
+         SELECT_OPTIONS |= SELECT_FAKE;
       } else if (strcmp(arg, "-select=stubs") == 0) {
-         SELECT_ENABLED = 1; SELECT_STUBS = 1;
+         SELECT_OPTIONS |= SELECT_STUBS;
       } else if (strcmp(arg, "-select=nostubs") == 0) {
-         SELECT_ENABLED = 1; SELECT_NOSTUBS = 1;
+         SELECT_OPTIONS |= SELECT_NOSTUBS;
 #endif // __ONEFS__
-      } else if (strncmp(arg, "-since", 6) == 0) {	// -since[_*]= ...
+      } else if (strncmp(arg, "-since", 6) == 0 ||
+                 strncmp(arg, "-notsince", 9) == 0) {	// -[not]since[_*]= ...
          get_since_time(arg);				// Do or die!
-         SELECT_ENABLED = 1;
-      // Other selection-related <option> values ...
+      // Directory include/exclude options -- simiar to -select options, but not in selected() function ...
       } else if (strcmp(arg, "+.ifsvar") == 0) {	// also traverse .ifsvar directories
          Opt_IFSVAR = 1;
       } else if (strcmp(arg, "+.snapshot") == 0) {	// also traverse .snapshot[s] directories
@@ -3728,11 +3803,21 @@ main(int argc, char *argv[])
    for (i=0; i<N_TARGET_PATHS; i++)
       fprintf(Plog, " target[%d] = %s\n", i, TARGET_PATHS[i]);
 
-   if (SELECT_SINCE_TIME) fprintf(Plog, " -since = %s", ctime(&SELECT_SINCE_TIME));
-   if (SELECT_SINCE_ATIME) fprintf(Plog, " -since_atime = %s", ctime(&SELECT_SINCE_ATIME));
-   if (SELECT_SINCE_MTIME) fprintf(Plog, " -since_mtime = %s", ctime(&SELECT_SINCE_MTIME));
-   if (SELECT_SINCE_CTIME) fprintf(Plog, " -since_ctime = %s", ctime(&SELECT_SINCE_CTIME));
-   if (SELECT_SINCE_BIRTH) fprintf(Plog, " -since_birth = %s", ctime(&SELECT_SINCE_BIRTH));
+   if (SELECT_OPTIONS&SELECT_HARDCODED) fprintf(Plog, " -select hardcoded enabled\n");
+   if (SELECT_OPTIONS&SELECT_LFN) fprintf(Plog, " -select=lfn enabled\n");
+   if (SELECT_OPTIONS&SELECT_STUBS) fprintf(Plog, " -select=stubs enabled\n");
+   if (SELECT_OPTIONS&SELECT_NOSTUBS) fprintf(Plog, " -select=nostubs enabled\n");
+   if (SELECT_OPTIONS&SELECT_FAKE) fprintf(Plog, " -select=fake enabled\n");
+   if (SELECT_OPTIONS&SELECT_SINCE_TIME) fprintf(Plog, " -since = %s", ctime(&SELECT_SINCE_TIME_T));
+   if (SELECT_OPTIONS&SELECT_SINCE_ATIME) fprintf(Plog, " -since_atime = %s", ctime(&SELECT_SINCE_ATIME_T));
+   if (SELECT_OPTIONS&SELECT_SINCE_MTIME) fprintf(Plog, " -since_mtime = %s", ctime(&SELECT_SINCE_MTIME_T));
+   if (SELECT_OPTIONS&SELECT_SINCE_CTIME) fprintf(Plog, " -since_ctime = %s", ctime(&SELECT_SINCE_CTIME_T));
+   if (SELECT_OPTIONS&SELECT_SINCE_BIRTH) fprintf(Plog, " -since_birth = %s", ctime(&SELECT_SINCE_BIRTH_T));
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_TIME) fprintf(Plog, " -notsince = %s", ctime(&SELECT_SINCE_TIME_T));
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_ATIME) fprintf(Plog, " -notsince_atime = %s", ctime(&SELECT_SINCE_ATIME_T));
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_MTIME) fprintf(Plog, " -notsince_mtime = %s", ctime(&SELECT_SINCE_MTIME_T));
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_CTIME) fprintf(Plog, " -notsince_ctime = %s", ctime(&SELECT_SINCE_CTIME_T));
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_BIRTH) fprintf(Plog, " -notsince_birth = %s", ctime(&SELECT_SINCE_BIRTH_T));
 
    fprintf(Plog, "@ Platform recap ...\n");
    (void) uname(&uts);
@@ -3887,64 +3972,64 @@ main(int argc, char *argv[])
    fprintf(Plog, "%16ld - voluntary context switches\n", p_usage.ru_nvcsw);
    fprintf(Plog, "%16ld - involuntary context switches\n", p_usage.ru_nivcsw);
 
-   fprintf(Plog, "@ Summary pwalk stats ...\n");
+   // @@@ Summary scan stats ...
+   fprintf(Plog, "@ pwalk scan statistics ...\n");
    fprintf(Plog, "%16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
    fprintf(Plog, "%16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
    fprintf(Plog, "%16llu - pop%s\n", FIFO_POPS, (FIFO_POPS != 1) ? "s" : "");
-
-   // @@@ ... only report if they happened ...
+   fprintf(Plog, "%16llu - file%s scanned (%llu stat() errors)\n",
+      GS.NScanned, (GS.NScanned != 1) ? "s" : "", GS.NStatErrs);
+   fprintf(Plog, "%16llu => zero-length file%s\n", GS.NZeroFiles, (GS.NZeroFiles != 1) ? "s" : "");
+   if (GS.NHardLinkFiles) {
+      fprintf(Plog, "%16llu => files with hard link count > 1\n", GS.NHardLinkFiles);
+      fprintf(Plog, "%16llu => sum of hard links > 1\n", GS.NHardLinks);
+   }
+   // ... only report these if they happened ...
    if (GS.NPythonCalls > 0) fprintf(Plog, "%16llu - Python call%s from -audit\n",
          GS.NPythonCalls, (GS.NPythonCalls != 1) ? "s" : "");
    if (GS.NRemoved > 0) fprintf(Plog, "%16llu - file%s removed by -rm\n",
          GS.NRemoved, (GS.NRemoved != 1) ? "s" : "");
-
-   // @@@ ... Grand total of stat(2)-based stats ...
-   fprintf(Plog, "%16llu - file%s scanned (%llu stat() errors)\n",
-      GS.NScanned, (GS.NScanned != 1) ? "s" : "", GS.NStatErrs);
-   fprintf(Plog, "%16llu - file%s selected ...\n", GS.NSelected, (GS.NSelected != 1) ? "s" : "");
-   // fprintf(Plog, "%16llu -> director%s\n", GS.NOpendirs, (GS.NOpendirs != 1) ? "ies" : "y");
-   fprintf(Plog, "%16llu => director%s\n", GS.NDirs, (GS.NDirs != 1) ? "ies" : "y");
-   fprintf(Plog, "%16llu => file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
-   fprintf(Plog, "%16llu => symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
-   fprintf(Plog, "%16llu => other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
-   fprintf(Plog, "%16llu - byte%s logical (%4.2f GB)\n",
-      GS.NBytesLogical, (GS.NBytesLogical != 1) ? "s" : "", GS.NBytesLogical / 1000000000.);
-   fprintf(Plog, "%16llu - byte%s physical (%4.2f GB)\n",
-      GS.NBytesPhysical, (GS.NBytesPhysical != 1) ? "s" : "", GS.NBytesPhysical / 1000000000.);
-   if (GS.NBytesLogical > 0) {	// protect divide ...
-      fprintf(Plog, "%15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
-         ((GS.NBytesPhysical - GS.NBytesLogical)*100.)/GS.NBytesLogical);
-   }
-   fprintf(Plog, "%16llu - zero-length file%s\n", GS.NZeroFiles, (GS.NZeroFiles != 1) ? "s" : "");
-
-   // @@@ Hard link accounting ...
-   if (GS.NHardLinkFiles) {
-      fprintf(Plog, "%16llu - files with hard link count > 1\n", GS.NHardLinkFiles);
-      fprintf(Plog, "%16llu - sum of hard links > 1\n", GS.NHardLinks);
-   }
-
-   // @@@ Cheap-to-keep GS counters ...
-   fprintf(Plog, "%16llx - MAX inode value seen\n", GS.MAX_inode_Value_Seen);
-   fprintf(Plog, "%16llx - MAX inode value selected()\n", GS.MAX_inode_Value_Selected);
-
-   // @@@ ... Show  ACL-related stats ...
+   // ... Show  ACL-related stats ...
    if (Cmd_XACLS || Cmd_WACLS || Cmd_RM_ACLS || P_ACL_P) {
       fprintf(Plog, "%16llu - ACL%s found\n", GS.NACLs, (GS.NACLs != 1) ? "s" : "");
    }
+   fprintf(Plog, "%16llx - MAX inode value scanned\n", GS.MAX_inode_Value_Seen);
 
-   // @@@ ... Show +crc, md5, and +denist stats ...
-   if (Cmd_DENIST || P_CRC32 || P_MD5 || Cmd_RM_ACLS) {
-      fprintf(Plog, "@ Summary (READONLY) file stats ...\n");
-      fprintf(Plog, "%16llu - zero-length file%s\n", GS.READONLY_Zero_Files, (GS.READONLY_Zero_Files != 1) ? "s" : "");
-      fprintf(Plog, "%16llu - open() call%s\n", GS.READONLY_Opens, (GS.READONLY_Opens != 1) ? "s" : "");
-      fprintf(Plog, "%16llu - open() or read() error%s\n", GS.READONLY_Errors, (GS.READONLY_Errors != 1) ? "s" : "");
-      if (P_CRC32)
-         fprintf(Plog, "%16llu - CRC byte%s read\n", GS.READONLY_CRC_Bytes, (GS.READONLY_CRC_Bytes != 1) ? "s" : "");
-      if (Cmd_DENIST)
-         fprintf(Plog, "%16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
+   // @@@ Selected files summary ...
+   if (SELECT_OPTIONS)
+      fprintf(Plog, "@ pwalk -select stats ...\n");
+   if (GS.NSelected == 0) {
+      fprintf(Plog, "               0 - files selected\n");
+   } else {
+      fprintf(Plog, "%16llu - pathname%s selected ...\n", GS.NSelected, (GS.NSelected != 1) ? "s" : "");
+      fprintf(Plog, "%16llu => file%s\n", GS.NFiles, (GS.NFiles != 1) ? "s" : "");
+      fprintf(Plog, "%16llu => director%s\n", GS.NDirs, (GS.NDirs != 1) ? "ies" : "y");
+      fprintf(Plog, "%16llu => symlink%s\n", GS.NSymlinks, (GS.NSymlinks != 1) ? "s" : "");
+      fprintf(Plog, "%16llu => other%s\n", GS.NOthers, (GS.NOthers != 1) ? "s" : "");
+      fprintf(Plog, "%16llu - byte%s logical (%4.2f GB)\n",
+         GS.NBytesLogical, (GS.NBytesLogical != 1) ? "s" : "", GS.NBytesLogical / 1000000000.);
+      fprintf(Plog, "%16llu - byte%s physical (%4.2f GB)\n",
+         GS.NBytesPhysical, (GS.NBytesPhysical != 1) ? "s" : "", GS.NBytesPhysical / 1000000000.);
+      if (GS.NBytesLogical > 0) {	// protect divide ...
+         fprintf(Plog, "%15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
+            ((GS.NBytesPhysical - GS.NBytesLogical)*100.)/GS.NBytesLogical);
+      }
+      fprintf(Plog, "%16llx - MAX inode value selected\n", GS.MAX_inode_Value_Selected);
+
+      // ... Show +crc, md5, and +denist stats ...
+      if (Cmd_DENIST || P_CRC32 || P_MD5 || Cmd_RM_ACLS) {
+         fprintf(Plog, "@ Summary (READONLY) file stats ...\n");
+         fprintf(Plog, "%16llu - zero-length file%s\n", GS.READONLY_Zero_Files, (GS.READONLY_Zero_Files != 1) ? "s" : "");
+         fprintf(Plog, "%16llu - open() call%s\n", GS.READONLY_Opens, (GS.READONLY_Opens != 1) ? "s" : "");
+         fprintf(Plog, "%16llu - open() or read() error%s\n", GS.READONLY_Errors, (GS.READONLY_Errors != 1) ? "s" : "");
+         if (P_CRC32)
+            fprintf(Plog, "%16llu - CRC byte%s read\n", GS.READONLY_CRC_Bytes, (GS.READONLY_CRC_Bytes != 1) ? "s" : "");
+         if (Cmd_DENIST)
+            fprintf(Plog, "%16llu - DENIST byte%s read\n", GS.READONLY_DENIST_Bytes, (GS.READONLY_DENIST_Bytes != 1) ? "s" : "");
+      }
    }
 
-   fprintf(Plog, "@ Summary - bottom-line ...\n");
+   fprintf(Plog, "@ pwalk run summary ...\n");
    fprintf(Plog, "cmd =");
    for (i=0; i<argc; i++) fprintf(Plog, " %s", argv[i]);
    fprintf(Plog, "\n");

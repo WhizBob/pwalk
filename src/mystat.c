@@ -72,7 +72,9 @@ printf_st_flags(unsigned flags)
 #elif defined(__ONEFS__)
       // Mask values here snapshotted from 8.1.2 /usr/include/sys/stat.h ....
       // #define SF_SETTABLE     0x0fff0000      // mask of root-changeable flags ...
-      if (flags & SF_BACKUP_DOM_SPARSE) printf("%sbackup_dom_sparse", DOCOMMA);		// 0x08000000
+#if defined(__ONEFS_PRE_822__)
+      if (flags & SF_BACKUP_DOM_SPARSE) printf("%sbackup_dom_sparse", DOCOMMA);         // 0x08000000
+#endif
       if (flags & SF_PARENTS_UPGRADED) printf("%sparents_upgraded", DOCOMMA);		// 0x04000000
       if (flags & SF_HASNTFSOG) printf("%shasntfsog", DOCOMMA);				// 0x02000000
       if (flags & SF_HASNTFSACL) printf("%shasntfsacl", DOCOMMA);			// 0x01000000

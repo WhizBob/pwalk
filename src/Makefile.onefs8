@@ -8,7 +8,8 @@ PWALK_H=pwalk.h pwalk_audit.h pwalk_onefs.h pwalk_sums.h
 PWALK_LIBS=-lisi_persona -lisi_acl -lisi_util -lm -lrt -lpthread
 
 # -lisi_diskpools
-PWALK_OPTS=-D__ONEFS__ -pthread -fbounds_checking -g -fno-limit-debug-info
+# -fbounds_checking - not available at OneFS 8.2 ...
+PWALK_OPTS=-D__ONEFS__ -pthread -g -fno-limit-debug-info
 
 WACLS_LIBS=-lisi_persona -lisi_acl -lisi_util -lm
 WACLS_OPTS=-g
