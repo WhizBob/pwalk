@@ -1,8 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
-
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.09b1"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.09b3"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -302,20 +301,6 @@ static int   TARGET_DFDS[MAXPATHS];
 #define TARGET_DFD(x)  (TARGET_DFDS[x % N_TARGET_PATHS])
 #define TARGET_PATH(x) (TARGET_PATHS[x % N_TARGET_PATHS])
 #define TARGET_INODE   (TARGET_INODES[0])
-
-// @@@ Global parameters for +tally  ...
-
-// Args that drive +tally (klooge: runtime parameterize these!) ...
-static char *TALLY_TAG = "tally";               // Default '+tally=<tag>' value
-static char *TALLY_COLUMN_HEADING[] = {
-   "Tag[i]","Bucket","Count","Count%","sum(Size)","Size%","sum(Space)","Space%","Inflation%",NULL
-};
-static int TALLY_BUCKETS = 27;			// Number of TALLY buckets
-static count_64 TALLY_BUCKET_SIZE[TALLY_BUCKETS_MAX] = {
-   0, 1024, 2048, 4096, 8192, 2*8192, 3*8192, 4*8192, 5*8192, 6*8192, 7*8192, 8*8192,
-   9*8192, 10*8192, 11*8192, 12*8192, 13*8192, 14*8192, 15*8192, 16*8192,
-   256*1024, 512*1024, 1024*1024, 2048*1024, 4096*1024, 8192*1024, 0
-};
 
 // @@@ Globals used only in the main code ...
 static FILE *Fpop = NULL, *Fpush = NULL;	// File-based FIFO pointers
@@ -1066,21 +1051,23 @@ init_worker_pool(void)
 
 // @@@ SECTION: Misc helper functions @@@
 
-// str_normalize() - Remove traiiing whitespace in-situ in passed string, and return pointer
-// to first non-whitespace character or NUL byte if resulting string is empty.
+// str_normalize() - Input is expected to be a buffer of NUL-terminated strings.
+// 1. Remove trailing whitespace in-situ in passed string.
+// 2. Return 'next' pointer to byte following current string.
+// 3. Return pointer to first non-whitespace character in string or NUL byte if normalized string is empty. 
 
 char *
 str_normalize(char *line, char **next)
 {
-   char *p, *result;
+   char *p0, *pe;
    int len;
 
    len = strlen(line);
-   *next = line + len + 1;
-   for (p=line; *p; p++) if (*p && isgraph(*p)) break;				// trim front
-   result = p;
-   for (p=line+len; p>result; ) if (isgraph(*p)) break; else *p-- = '\0';	// trim end
-   return result;
+   if (next) *next = line + len + 1;
+   for (p0=line; *p0; p0++) if (isgraph(*p0)) break;			// trim front
+   pe=line+len;
+   while ((pe > p0) && !isgraph(pe[-1])) *(--pe) = '\0'; 		// trim end
+   return p0;
 }
 
 // str_ends_with() - helper function.
@@ -1326,7 +1313,6 @@ parse_relop(char *str, int *relop)
 // CAUTION: 'k' is 1000, 'ki' is 1024, etc!
 // Returns 0 on success.
 //
-// TEST: 
 // TEST: void
 // TEST: test(char *str)
 // TEST: {
@@ -1348,13 +1334,13 @@ parse_relop(char *str, int *relop)
 // TEST: test("4ki");
 // TEST: test("64ki");
 // TEST: test("64k");
-// TEST: test("8.125ki");		// -3
+// TEST: test("8.125ki");		// -3 float not allowed
 // TEST: test("1mi");
 // TEST: test("128ki");
 // TEST: test("4ti");
 // TEST: test("1pi");
 // TEST: test("1ei");
-// TEST: test("42kb");			// -3
+// TEST: test("42kb");			// -3; 'b' not allowed
 // TEST: test("0xffffffffffffffff");	// Top bit cleared!
 // TEST: test("0x7fffffffffffffff");
 // TEST: test("0x1fffffffffffffff");
@@ -1388,6 +1374,7 @@ void
 parse_pfile(char *parfile)
 {
    int fd, fsize, i, len, rc;
+   count_64 i64val;
    char *p, *buf, *line, *next, *errstr = "";
    struct stat sb;
    int got_target = 0, got_source = 0, got_output = 0, got_select = 0, got_tally = 0;;
@@ -1417,50 +1404,64 @@ parse_pfile(char *parfile)
          continue;
       } else if (line[0] == '[') {				// section?
          if (strcasecmp(line, "[source]") == 0) {
-            if (got_source) { errstr = "Only one %s allowed!\n"; goto error; }
+            if (got_source) { errstr = "Only one %s section is allowed!\n"; goto error; }
             got_source = 1; section = SOURCE;
          } else if (strcasecmp(line, "[target]") == 0) {
-            if (got_target) { errstr = "Only one %s allowed!\n"; goto error; }
+            if (got_target) { errstr = "Only one %s section is allowed!\n"; goto error; }
             got_target = 1; section = TARGET;
          } else if (strcasecmp(line, "[output]") == 0) {
-            if (got_output) { errstr = "Only one %s allowed!\n"; goto error; }
+            if (got_output) { errstr = "Only one %s section is allowed!\n"; goto error; }
             got_output = 1; section = OUTPUT;
          } else if (strcasecmp(line, "[select]") == 0) {
-            if (got_select) { errstr = "Only one %s allowed!\n"; goto error; }
+            if (got_select) { errstr = "Only one %s section is allowed!\n"; goto error; }
             got_select = 1; section = SELECT;
          } else if (strcasecmp(line, "[tally]") == 0) {
-            if (got_tally) { errstr = "Only one %s allowed!\n"; goto error; }
+            if (got_tally) { errstr = "Only one %s section is allowed!\n"; goto error; }
             got_tally = 1; section = TALLY;
+            if (Cmd_TALLY) { errstr = "[tally] and +tally options are mutually exclusive!\n"; goto error; }
+            Cmd_TALLY = 1;
+            N_TALLY_BUCKETS = 0;
+            bzero(&TALLY_BUCKET_SIZE, sizeof(TALLY_BUCKET_SIZE));
          } else {
-            { errstr = "Invalid syntax: %s\n";  goto error; }
+            errstr = "-pfile= content invalid: \"%s\"\n";  goto error;
          }
          continue;
       } else {							// must be a parameter
          switch(section) {
-         case NONE: {
-            { errstr = "%s appears outside of a [section] context!\n"; goto error; }
-            }
-         case SOURCE: {
-            assert (N_SOURCE_PATHS < MAXPATHS);
-            SOURCE_PATHS[N_SOURCE_PATHS++] = line;
-            break;
-            }
-         case TARGET: {
-            assert (N_TARGET_PATHS < MAXPATHS);
-            TARGET_PATHS[N_TARGET_PATHS++] = line;
-            break;
-            }
-         case OUTPUT: {
-            OUTPUT_ARG = line;
-            break;
-            }
-         case SELECT: {						// -select enables *using* these criteria
-            if (VERBOSE) fprintf(stderr, "NOTE: -select criteria present!\n");
-            }
-         case TALLY: {
+            case NONE:
+               errstr = "-pfile= \"%s\" appears outside of a [section] context!\n";
+               goto error;
+            case SOURCE:
+               assert (N_SOURCE_PATHS < MAXPATHS);
+               SOURCE_PATHS[N_SOURCE_PATHS++] = line;
+               break;
+            case TARGET:
+               assert (N_TARGET_PATHS < MAXPATHS);
+               TARGET_PATHS[N_TARGET_PATHS++] = line;
+               break;
+            case OUTPUT:
+               OUTPUT_ARG = line;
+               break;
+            case SELECT:						// -select enables *using* these criteria
+               if (VERBOSE) fprintf(stderr, "NOTE: -select criteria activated!\n");
+               break;
+            case TALLY:
+               // Entries must be monotonically increasing, multiples of 1024, and fewer than MAX_TALLY_BUCKETS
+               // i64val = strtoull(line, NULL, 0);	// First draft ...
+               rc = parse_64u(line, &i64val);		// Includes Ki/Mi/Gi/Ti suffixes and variable bases
+               if (rc != 0) {
+                  { errstr = "[tally] value invalid: \"%s\"\n";  goto error; }
+               } else if (N_TALLY_BUCKETS >= MAX_TALLY_BUCKETS) {
+                  { errstr = "[tally] too many values @ \"%s\"\n";  goto error; }
+               } else if (i64val & 0x377) {
+                  { errstr = "[tally] value not multiple of 1024: \"%s\"\n";  goto error; }
+               } else if ((N_TALLY_BUCKETS > 0) && (i64val <= TALLY_BUCKET_SIZE[N_TALLY_BUCKETS-1])) {
+                  { errstr = "[tally] value not monotonically ascending: \"%s\"\n";  goto error; }
+               } else {
+                  TALLY_BUCKET_SIZE[N_TALLY_BUCKETS++] = i64val;
+               }
             }
          }
-      }
    }
 
    return;
@@ -1990,10 +1991,10 @@ cmp_source_target(int w_id, char *relpath, struct stat *src_sb_p, char *cmp_comp
 
 // @@@ SECTION: pwalk +tally support @@@
 
-// @@@ #tally accumulate - per-worker subtotals ...
+// @@@ +tally per-file accumulator - accumulate per-worker subtotals ...
 
 // pwalk_tally_file() - Accumulate per-worker +tally subtotals.
-// NOTE: Bucket[TALLY_BUCKETS] catches files that did not fall into previous buckets.
+// NOTE: Bucket[N_TALLY_BUCKETS] catches files that did not fall into previous buckets.
 
 void
 pwalk_tally_file(struct stat *sb, int w_id)
@@ -2006,9 +2007,9 @@ pwalk_tally_file(struct stat *sb, int w_id)
    // We only tally regular files here ...
    if (!S_ISREG(sb->st_mode)) return;
    
-   // @@@ Accumulate WS subtotals from per-file contributions ...
-   for (i=0; i<TALLY_BUCKETS; i++) {
-      if ((sb->st_size <= TALLY_BUCKET_SIZE[i]) || (i+1 == TALLY_BUCKETS)) {
+   // Accumulate WS subtotals from per-file contributions ...
+   for (i=0; i<=N_TALLY_BUCKETS; i++) {
+      if ((sb->st_size <= TALLY_BUCKET_SIZE[i]) || (i == N_TALLY_BUCKETS)) {	// "current or last bucket ..."
          WS[w_id]->TALLY_BUCKET.count[i] += 1;
          WS[w_id]->TALLY_BUCKET.size[i] += sb->st_size;
          WS[w_id]->TALLY_BUCKET.space[i] += sb->st_blocks * ST_BLOCK_SIZE;
@@ -2017,7 +2018,7 @@ pwalk_tally_file(struct stat *sb, int w_id)
    }
 }
 
-// @@@ #tally output - calculate & output ...
+// @@@ +tally output - calculate & output ...
 
 void
 pwalk_tally_output()
@@ -2030,47 +2031,66 @@ pwalk_tally_output()
    // @@@ Create output file ...
    sprintf(ofile, "%s%cpwalk_tally.csv", OUTPUT_DIR, PATHSEPCHR);
    TALLY = fopen(ofile, "w");
-   if (TALLY == NULL) abend("Cannot create .tally file!");
+   if (TALLY == NULL) abend("Cannot create pwalk_tally.csv file!");
 
    count_64 tally_total_count = 0;
    count_64 tally_total_size = 0;
    count_64 tally_total_space = 0;
-   double tally_pct_count[TALLY_BUCKETS_MAX];
-   double tally_pct_size[TALLY_BUCKETS_MAX];
-   double tally_pct_space[TALLY_BUCKETS_MAX];
-   double tally_inflation[TALLY_BUCKETS_MAX];
+   double tally_pct_count[MAX_TALLY_BUCKETS];
+   double tally_pct_size[MAX_TALLY_BUCKETS];
+   double tally_pct_space[MAX_TALLY_BUCKETS];
+   double tally_inflation[MAX_TALLY_BUCKETS];
 
-   // @@@  Calculate: Grand totals ...
-   for (i=0; i<TALLY_BUCKETS; i++) {
+   // @@@ Calculate: Accumulate GS global totals from WS worker subtotals ...
+   for (w_id=0; w_id < N_WORKERS; w_id++) {
+      for (i=0; i<=N_TALLY_BUCKETS; i++) {
+         GS.TALLY_BUCKET.count[i] += WS[w_id]->TALLY_BUCKET.count[i];
+         GS.TALLY_BUCKET.size[i] += WS[w_id]->TALLY_BUCKET.size[i];
+         GS.TALLY_BUCKET.space[i] += WS[w_id]->TALLY_BUCKET.space[i];
+      }
+   }
+
+   // @@@  Calculate: Grand totals from GS global totals ...
+   // No ... this cannot be rolled into previous loop ...
+   for (i=0; i<=N_TALLY_BUCKETS; i++) {
       tally_total_count += GS.TALLY_BUCKET.count[i];
       tally_total_size += GS.TALLY_BUCKET.size[i];
       tally_total_space += GS.TALLY_BUCKET.space[i];
    }
 
    // @@@  Calculate: Bucket percentages of grand totals ...
-   for (i=0; i<TALLY_BUCKETS; i++) {
+   // No ... this cannot be rolled into previous loop ...
+   for (i=0; i<=N_TALLY_BUCKETS; i++) {
       tally_pct_count[i] = 100. * (tally_total_count ? GS.TALLY_BUCKET.count[i] / (double) tally_total_count : 0.);
       tally_pct_size[i] = 100. * (tally_total_size ? GS.TALLY_BUCKET.size[i] / (double) tally_total_size : 0.);
       tally_pct_space[i] = 100. * (tally_total_space ? GS.TALLY_BUCKET.space[i] / (double) tally_total_space : 0.);
       tally_inflation[i] = (GS.TALLY_BUCKET.size[i] ? GS.TALLY_BUCKET.space[i] / (double) GS.TALLY_BUCKET.size[i] : 0.);
    }
    
-   // @@@  Output: Headings ...
+   // @@@  Output: Column headings ...
    for (i=0; TALLY_COLUMN_HEADING[i]; i++) {
       fprintf(TALLY, "%s", TALLY_COLUMN_HEADING[i]);
       if (TALLY_COLUMN_HEADING[i+1]) fprintf(TALLY, ",");
    }
    fprintf(TALLY, "\n");
    
-   // @@@  Output: Buckets with percentages ...
-   for (i=0; i<TALLY_BUCKETS; i++) {
-      if (TALLY_BUCKET_SIZE[i] == 0) {
-         if (i == 0) relop = "=";
-         else relop = ">";
-      } else relop = "<=";
-      fprintf(TALLY, "%s[%02d],\"%s %llu KiB\",%llu,%04.02f,%llu,%04.02f,%llu,%04.02f,%06.04f\n",
-         TALLY_TAG, i, relop,
-         (i+1 == TALLY_BUCKETS) ? TALLY_BUCKET_SIZE[i-1]/1024 : TALLY_BUCKET_SIZE[i]/1024,
+   // @@@  Output: Bucket totals with percentages ...
+   TALLY_BUCKET_SIZE[N_TALLY_BUCKETS] = TALLY_BUCKET_SIZE[N_TALLY_BUCKETS-1];	// Dupe last explicit bucket
+   for (i=0; i<=N_TALLY_BUCKETS; i++) {
+      if (i == N_TALLY_BUCKETS) relop = ">";
+      else if (TALLY_BUCKET_SIZE[i] == 0) relop = "=";
+      else relop = "<=";
+      fprintf(TALLY,"%s[0x%llx],\"%s %llu %s\",%llu,%04.02f,%llu,%04.02f,%llu,%04.02f,%06.04f\n",
+         TALLY_TAG, TALLY_BUCKET_SIZE[i],
+         relop,
+         (TALLY_BUCKET_SIZE[i] < (1L << 20)) ? (TALLY_BUCKET_SIZE[i] >> 10) :
+            (TALLY_BUCKET_SIZE[i] < (1L << 30)) ? (TALLY_BUCKET_SIZE[i] >> 20) :
+               (TALLY_BUCKET_SIZE[i] < (1L << 40)) ? (TALLY_BUCKET_SIZE[i] >> 30) :
+                  (TALLY_BUCKET_SIZE[i] >> 40),
+         TALLY_BUCKET_SIZE[i] < (1L << 20) ? "KiB" :
+            TALLY_BUCKET_SIZE[i] < (1L << 30) ? "MiB" :
+               TALLY_BUCKET_SIZE[i] < (1L << 40) ? "GiB" :
+                  "TiB",
          GS.TALLY_BUCKET.count[i], tally_pct_count[i],
          GS.TALLY_BUCKET.size[i], tally_pct_size[i],
          GS.TALLY_BUCKET.space[i], tally_pct_space[i],
@@ -2078,8 +2098,8 @@ pwalk_tally_output()
    }
 
    // @@@  Output: Grand totals ...
-   fprintf(TALLY, "%s[%d],\"%s\",%llu,%04.02f,%llu,%04.02f,%llu,%04.02f,%06.04f\n",
-      TALLY_TAG, TALLY_BUCKETS,
+   fprintf(TALLY, "%s,\"%s\",%llu,%04.02f,%llu,%04.02f,%llu,%04.02f,%06.04f\n",
+      TALLY_TAG,
       "TOTALS",
       tally_total_count, 100.,
       tally_total_size, 100.,
@@ -3498,8 +3518,11 @@ process_arglist(int argc, char *argv[])
          Cmd_RM_ACLS = 1;
 #endif
       } else if ((strcmp(arg, "+tally") == 0) || (strncmp(arg, "+tally=", 7) == 0) ) {
-         Cmd_TALLY = 1;
-         if (strlen(arg) > 7) TALLY_TAG = arg + 7;	// <tag> modifier for +tally
+         if (Cmd_TALLY) { fprintf(stderr, "ERROR: [tally] and +tally options are mutually exclusive!\n"); exit(-1); }
+         else Cmd_TALLY = 1;
+         if (strlen(arg) > 7) TALLY_TAG = arg + 7;	// <tag> value for +tally output
+         N_TALLY_BUCKETS=1;	 // Count the compile-time default buckets ...
+         while (TALLY_BUCKET_SIZE[N_TALLY_BUCKETS]) N_TALLY_BUCKETS++;
 #if PWALK_ACLS // ACL-related command args (Linux only) ...
       } else if (strncmp(arg, "+wacls=", 7) == 0) {	// Write binary NFS4 ACLS over a pipe ...
          Cmd_WACLS = 1;
@@ -3909,14 +3932,6 @@ main(int argc, char *argv[])
          GS.MAX_inode_Value_Seen = WS[w_id]->MAX_inode_Value_Seen;
       if (GS.MAX_inode_Value_Selected < WS[w_id]->MAX_inode_Value_Selected)
          GS.MAX_inode_Value_Selected = WS[w_id]->MAX_inode_Value_Selected;
-      // @@@ #tally: accumulate GS totals from WS subtotals ...
-      if (Cmd_TALLY) {
-         for (i=0; i<TALLY_BUCKETS; i++) {
-            GS.TALLY_BUCKET.count[i] += WS[w_id]->TALLY_BUCKET.count[i];
-            GS.TALLY_BUCKET.size[i] += WS[w_id]->TALLY_BUCKET.size[i];
-            GS.TALLY_BUCKET.space[i] += WS[w_id]->TALLY_BUCKET.space[i];
-         }
-      }
    }
 
    // ------------------------------------------------------------------------

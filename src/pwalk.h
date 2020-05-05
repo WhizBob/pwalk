@@ -96,7 +96,6 @@ static int CLK_TCK;
 #define MAXPATHS 64				// Arbitrary limit for [source] or [target] multi-paths
 #define MAX_PATH_DEPTH 128			// Max pathname components
 #define PROGRESS_TIME_INTERVAL 3600/4		// Seconds between progress outputs to log file
-#define TALLY_BUCKETS_MAX 64                    // MUST be a #define!
 
 // Mask bits for metadata to gather during treewalk (in PWget_MASK) ...
 #define PWget_STAT	0x001		// Basic stat()
@@ -114,13 +113,6 @@ typedef struct {
    void *copy;		// known-good copy of area
    char msg[256];	// utility buffer
 } PWALK_DEBUG_BLOCK;
-
-// -tally scoreboard (for WS and GS) ...
-typedef struct {				// Only used in WS and GS (not DS)
-   count_64 count[TALLY_BUCKETS_MAX];
-   count_64 size[TALLY_BUCKETS_MAX];
-   count_64 space[TALLY_BUCKETS_MAX];
-} TALLY_BUCKET_COUNTERS;
 
 #if defined(PWALK_SOURCE)
 FILE *Plog = NULL;			// Main logfile output (pwalk.log)
@@ -140,6 +132,59 @@ extern int PWdryrun;
 extern void abend(char *str);
 extern PWALK_DEBUG_BLOCK PBLK;
 #endif
+
+// @@@ Global parameters for +tally  ...
+
+#define MAX_TALLY_BUCKETS 128                   // MUST be a #define!
+static int N_TALLY_BUCKETS;			// Counted at runtime for TALLY_BUCKET_SIZE array
+
+// -tally scoreboard block (only for WS and GS, not DS) ...
+typedef struct {
+   count_64 count[MAX_TALLY_BUCKETS];
+   count_64 size[MAX_TALLY_BUCKETS];
+   count_64 space[MAX_TALLY_BUCKETS];
+} TALLY_BUCKET_COUNTERS;
+
+static char *TALLY_TAG = "tally";               // Default '+tally=<tag>' value
+static char *TALLY_COLUMN_HEADING[] = {
+   "Tag","Bucket","Count","Count%","sum(Size)","Size%","sum(Space)","Space%","Inflation%",NULL
+};
+static count_64 TALLY_BUCKET_SIZE[MAX_TALLY_BUCKETS] = {
+   0,
+   1*1024,		// KiB
+   2*1024,
+   3*1024,
+   4*1024,
+   5*1024,
+   6*1024,
+   7*1024,
+   8*1024,
+   16*1024,
+   24*1024,
+   32*1024,
+   40*1024,
+   48*1024,
+   56*1024,
+   64*1024,
+   72*1024,
+   80*1024,
+   88*1024,
+   96*1024,
+   104*1024,
+   112*1024,
+   120*1024,
+   128*1024,
+   256*1024,
+   512*1024,
+   1048576,		// MiB = 1024^2 = 2^20
+   10*1048576,
+   100*1048576,
+   (1L<<30),		// GiB = 1024^3 = 2^30
+   10*(1L<<30),
+   100*(1L<<30),
+   (1L<<40),		// TiB = 1024^4 = 2^40
+   0
+};
 
 // @@@ WorkerData is array of structures that contains most worker-indexed private DATA ...
 #if defined(PWALK_SOURCE)
