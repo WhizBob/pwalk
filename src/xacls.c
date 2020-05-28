@@ -53,6 +53,7 @@ usage(void)
     printf("            -sp -> show POSIX ACLs input\n");
     printf("            -sn -> show ACL4 values as nfs4_setfacl commands\n");
     printf("            -sh -> show ACL4 values in CHEX format\n");
+    printf("            -s1 -> show ACL4 values in OneFS format\n");
     printf("     NOTE: Must usually be run as root to be able to read all ACLs!\n");
     exit (-1);
 }
@@ -68,6 +69,7 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
     int show_posix = 0;		// Unless '-sp' used
     int show_nfs4_setfacl = 0;	// Unless '-sn' used
     int show_chex = 0;		// Unless '-sh' used
+    int show_onefs = 0;		// Unless '-s1' used
     int write_acl4bin = 0;	// Unless '-o' or '-p' used
 
     // pw_acl_* ACL4 vbls ...
@@ -110,6 +112,9 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
             continue;
         } else if (strcmp(argv[arg], "-sh") == 0) {
             show_chex = 1;
+            continue;
+        } else if (strcmp(argv[arg], "-s1") == 0) {
+            show_onefs = 1;
             continue;
         } else if (strcmp(argv[arg], "--") == 0) {
             pw_stdin = 1;
@@ -183,7 +188,9 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
         if (show_nfs4_setfacl)	// (to <stream>)
             pw_acl4_fprintf_nfs4_setfacl(&acl4, path, stdout);
         if (show_chex)		// (to stdout)
-            pw_acl4_fprintf_chex(&acl4, path, &sb, stdout);	
+            pw_acl4_fprintf_chex(&acl4, path, &sb, stdout);
+        if (show_onefs)		// (to stdout)
+            pw_acl4_fprintf_onefs(&acl4, path, &sb, stdout);
         if (write_acl4bin)	// (to acl4OUT)
             pw_acl4_fwrite_binary(&acl4, path, &acl4OUT, acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
     }

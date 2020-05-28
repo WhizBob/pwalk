@@ -482,10 +482,16 @@ pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, FILE *
     if (acl4p == NULL || acl4p->n_aces == 0)
         return;
 
-    // Output path semi-ls-l-like ...
-    format_mode_bits(mode_s, sb_p->st_mode);
-    if (path && path[0]) fprintf(stream, "%s %d %3d %3d %6lld %s\n",
-       mode_s, sb_p->st_nlink, sb_p->st_uid, sb_p->st_gid, sb_p->st_size, path);
+    // // Output path semi-ls-l-like ...
+    // format_mode_bits(mode_s, sb_p->st_mode);
+    // if (path && path[0]) fprintf(stream, "%s %d %3d %3d %6lld %s\n",
+    //    mode_s, sb_p->st_nlink, sb_p->st_uid, sb_p->st_gid, sb_p->st_size, path);
+
+    // Output chmod -E preamble ...
+    if (path && path[0]) {
+        fprintf(stream, "chown %d:%d %s\n", sb_p->st_uid, sb_p->st_gid, path);
+        fprintf(stream, "chmod -E %s <<END\n", path);
+    }
 
     // Format each ACE in sequence ...
     for (i=0; i < acl4p->n_aces; i++) {
@@ -498,6 +504,7 @@ pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, FILE *
         pw_acl_ace4_sprintf_onefs(ace4_string, acl4p->ace4 + i, sb_p);
         fprintf(stream, " %d: %s\n", i, ace4_string);
     }
+    if (path && path[0]) fprintf(stream, "END\n");
 }
 
 // CANONICALIZATION FUNCTIONS ...
