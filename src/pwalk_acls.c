@@ -411,7 +411,7 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p, int chmod)
             } 
         } 
     }
-    maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
+    maskval &= ~mask_done; // TAKE AWAY bits we've already expressed ...
 
     // STEP #2: See if lesser GENERIC mappings match ...
     if ((maskval & ONEFS_generic_all) == ONEFS_generic_all) {
@@ -427,53 +427,53 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p, int chmod)
             p += sprintf(p, "generic_exec,"); mask_done |= ONEFS_generic_exec;
         } 
     } 
-    maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
+    maskval &= ~mask_done; // TAKE AWAY bits we've already expressed ...
 
     // STEP #3: For non-directories, see if BSD 'modify' matches ...
     if (!S_ISDIR(sb_p->st_mode)) {
         if ((maskval & ONEFS_modify) == ONEFS_modify) {
             p += sprintf(p, "modify,"); mask_done |= ONEFS_modify;
-            maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
+            maskval &= ~mask_done; // TAKE AWAY bits we've already expressed ...
         }
     }
 
     // STEP #4: See if 'std_required' matches ...
     if ((maskval & ONEFS_std_required) == ONEFS_std_required) {
         p += sprintf(p, "std_required,"); mask_done |= ONEFS_std_required;
-        maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
+        maskval &= ~mask_done; // TAKE AWAY bits we've already expressed ...
     }
 
     // STEP #5: Match remaining 14 individual permissions ...
     if (S_ISDIR(sb_p->st_mode)) {
-        if (maskval & ACE4_LIST_DIRECTORY   ) p += sprintf(p, "list,");
-        if (maskval & ACE4_ADD_FILE         ) p += sprintf(p, "add_file,");
-        if (maskval & ACE4_ADD_SUBDIRECTORY ) p += sprintf(p, "add_subdir,");
-        if (maskval & ACE4_READ_NAMED_ATTRS ) p += sprintf(p, "dir_read_ext_attr,");
-        if (maskval & ACE4_WRITE_NAMED_ATTRS) p += sprintf(p, "dir_write_ext_attr,");
-        if (maskval & ACE4_EXECUTE          ) p += sprintf(p, "traverse,");
-        if (maskval & ACE4_DELETE_CHILD     ) p += sprintf(p, "delete_child,");
-        if (maskval & ACE4_READ_ATTRIBUTES  ) p += sprintf(p, "dir_read_attr,");
-        if (maskval & ACE4_WRITE_ATTRIBUTES ) p += sprintf(p, "dir_write_attr,");
-        if (maskval & ACE4_DELETE           ) p += sprintf(p, "std_delete,");
-        if (maskval & ACE4_READ_ACL         ) p += sprintf(p, "std_read_dac,");
-        if (maskval & ACE4_WRITE_ACL        ) p += sprintf(p, "std_write_dac,");
-        if (maskval & ACE4_WRITE_OWNER      ) p += sprintf(p, "std_write_owner,");
         if (maskval & ACE4_SYNCHRONIZE      ) p += sprintf(p, "std_synchronize,");
+        if (maskval & ACE4_WRITE_OWNER      ) p += sprintf(p, "std_write_owner,");
+        if (maskval & ACE4_WRITE_ACL        ) p += sprintf(p, "std_write_dac,");
+        if (maskval & ACE4_READ_ACL         ) p += sprintf(p, "std_read_dac,");
+        if (maskval & ACE4_DELETE           ) p += sprintf(p, "std_delete,");
+        if (maskval & ACE4_WRITE_NAMED_ATTRS) p += sprintf(p, "dir_write_ext_attr,");
+        if (maskval & ACE4_READ_NAMED_ATTRS ) p += sprintf(p, "dir_read_ext_attr,");
+        if (maskval & ACE4_DELETE_CHILD     ) p += sprintf(p, "delete_child,");
+        if (maskval & ACE4_EXECUTE          ) p += sprintf(p, "traverse,");
+        if (maskval & ACE4_WRITE_ATTRIBUTES ) p += sprintf(p, "dir_write_attr,");
+        if (maskval & ACE4_READ_ATTRIBUTES  ) p += sprintf(p, "dir_read_attr,");
+        if (maskval & ACE4_ADD_SUBDIRECTORY ) p += sprintf(p, "add_subdir,");
+        if (maskval & ACE4_ADD_FILE         ) p += sprintf(p, "add_file,");
+        if (maskval & ACE4_LIST_DIRECTORY   ) p += sprintf(p, "list,");
     } else {
-        if (maskval & ACE4_READ_DATA        ) p += sprintf(p, "file_read,");
+        if (maskval & ACE4_SYNCHRONIZE      ) p += sprintf(p, "std_synchronize,");
+        if (maskval & ACE4_WRITE_OWNER      ) p += sprintf(p, "std_write_owner,");
+        if (maskval & ACE4_WRITE_ACL        ) p += sprintf(p, "std_write_dac,");
+        if (maskval & ACE4_READ_ACL         ) p += sprintf(p, "std_read_dac,");
+        if (maskval & ACE4_DELETE           ) p += sprintf(p, "std_delete,");
+        if (maskval & ACE4_DELETE_CHILD     ) p += sprintf(p, "delete_child,");		// meaningless, but settable
+        if (maskval & ACE4_WRITE_ATTRIBUTES ) p += sprintf(p, "file_write_attr,");
+        if (maskval & ACE4_READ_ATTRIBUTES  ) p += sprintf(p, "file_read_attr,");
+        if (maskval & ACE4_EXECUTE          ) p += sprintf(p, "execute,");
+        if (maskval & ACE4_WRITE_NAMED_ATTRS) p += sprintf(p, "file_write_ext_attr,");
+        if (maskval & ACE4_READ_NAMED_ATTRS ) p += sprintf(p, "file_read_ext_attr,");
         if (maskval & ACE4_WRITE_DATA       ) p += sprintf(p, "file_write,");
         if (maskval & ACE4_APPEND_DATA      ) p += sprintf(p, "append,");
-        if (maskval & ACE4_READ_NAMED_ATTRS ) p += sprintf(p, "file_read_ext_attr,");
-        if (maskval & ACE4_WRITE_NAMED_ATTRS) p += sprintf(p, "file_write_ext_attr,");
-        if (maskval & ACE4_EXECUTE          ) p += sprintf(p, "execute,");
-        if (maskval & ACE4_DELETE_CHILD     ) p += sprintf(p, "delete_child,");		// meaningless, but settable
-        if (maskval & ACE4_READ_ATTRIBUTES  ) p += sprintf(p, "file_read_attr,");
-        if (maskval & ACE4_WRITE_ATTRIBUTES ) p += sprintf(p, "file_write_attr,");
-        if (maskval & ACE4_DELETE           ) p += sprintf(p, "std_delete,");
-        if (maskval & ACE4_READ_ACL         ) p += sprintf(p, "std_read_dac,");
-        if (maskval & ACE4_WRITE_ACL        ) p += sprintf(p, "std_write_dac,");
-        if (maskval & ACE4_WRITE_OWNER      ) p += sprintf(p, "std_write_owner,");
-        if (maskval & ACE4_SYNCHRONIZE      ) p += sprintf(p, "std_synchronize,");
+        if (maskval & ACE4_READ_DATA        ) p += sprintf(p, "file_read,");
     }
 
     // <ace4 flags> ... Only for directories in this context.
