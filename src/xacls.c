@@ -43,18 +43,20 @@ PW_ACL_ERR(char *emsg)
 static void
 usage(void)
 {
-    printf("Usage: xacls [-d|h|i|o|p|- ...] [-sp] [-sh] [-sn] [-[o|p] <path|cmd>] <path> [<path> ...] ...\n");
+    printf("Usage: xacls [-d|h|i|o|p|- ...] {<format_option>} [-[o|p] <path|cmd>] <path> [<path> ...]\n");
     printf("     Where: -d -> enable DEBUG trail\n");
     printf("            -h -> help; show this usage() and exit\n");
     printf("            -i -> input path names from stdin (ignore non-option args)\n");
     printf("            -o -> output to <path> as a file (instead of -p)\n");
     printf("            -p -> output to <cmd> as a pipe (instead of -o)\n");
     printf("            -- -> end option list; next args are path names\n");
-    printf("            -sp -> show POSIX ACLs input\n");
+    printf("       <format_option> can be one or more of;\n");
+    printf("            -sp -> show POSIX ACL input\n");
     printf("            -sn -> show ACL4 values as nfs4_setfacl commands\n");
     printf("            -sh -> show ACL4 values in CHEX format\n");
-    printf("            -s1 -> show ACL4 values in OneFS format\n");
-    printf("     NOTE: Must usually be run as root to be able to read all ACLs!\n");
+    printf("            -s1 -> show ACL4 values in OneFS ‘ls -led’ format\n");
+    printf("            -s1c -> show ACL4 values in OneFS ‘chown <uid>:<gid>; chmod -E …’ format\n");
+    printf("     NOTE: MUST run as root!\n");
     exit (-1);
 }
 
@@ -66,11 +68,12 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
     int pathlen;		// Size of path in pathbuf
     struct stat sb;
     int pw_stdin = 0;		// Unless '-i' or '--' is specified
+    int write_acl4bin = 0;	// Unless '-o' or '-p' used
     int show_posix = 0;		// Unless '-sp' used
     int show_nfs4_setfacl = 0;	// Unless '-sn' used
     int show_chex = 0;		// Unless '-sh' used
-    int show_onefs = 0;		// Unless '-s1' used
-    int write_acl4bin = 0;	// Unless '-o' or '-p' used
+    int show_onefs_ls = 0;	// Unless '-s1' used
+    int show_onefs_chmod = 0;	// Unless '-s1c' used
 
     // pw_acl_* ACL4 vbls ...
     int dir_flag;		// From S_ISDIR
@@ -114,7 +117,10 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
             show_chex = 1;
             continue;
         } else if (strcmp(argv[arg], "-s1") == 0) {
-            show_onefs = 1;
+            show_onefs_ls = 1;
+            continue;
+        } else if (strcmp(argv[arg], "-s1c") == 0) {
+            show_onefs_chmod = 1;
             continue;
         } else if (strcmp(argv[arg], "--") == 0) {
             pw_stdin = 1;
@@ -185,14 +191,16 @@ main(int argc, char *argv[])	// Linux 'xacls(1)'
         }
 
         // OUTPUT: ACL4 outputs (all are no-ops with an empty acl4) ...
+        if (write_acl4bin)	// (to acl4OUT)
+            pw_acl4_fwrite_binary(&acl4, path, &acl4OUT, acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
         if (show_nfs4_setfacl)	// (to <stream>)
             pw_acl4_fprintf_nfs4_setfacl(&acl4, path, stdout);
         if (show_chex)		// (to stdout)
             pw_acl4_fprintf_chex(&acl4, path, &sb, stdout);
-        if (show_onefs)		// (to stdout)
-            pw_acl4_fprintf_onefs(&acl4, path, &sb, stdout);
-        if (write_acl4bin)	// (to acl4OUT)
-            pw_acl4_fwrite_binary(&acl4, path, &acl4OUT, acl4OUTmode, pw_acls_emsg, &pw_acls_errno);
+        if (show_onefs_ls)	// (to stdout)
+            pw_acl4_fprintf_onefs(&acl4, path, &sb, 0, stdout);
+        if (show_onefs_chmod)	// (to stdout)
+            pw_acl4_fprintf_onefs(&acl4, path, &sb, 1, stdout);
     }
     // Gracefully shutdown/close acl4OUT ...
     pw_acl4_fwrite_binary(NULL, NULL, &acl4OUT, acl4OUTmode, pw_acls_emsg, &pw_acls_errno);

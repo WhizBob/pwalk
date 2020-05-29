@@ -3238,7 +3238,8 @@ dirent_meta_munge: // @@@
          }
          if (Cmd_XACLS & Cmd_XACLS_ONEFS) {
             if (!WDAT.XACLS_ONEFS_FILE) worker_aux_create(w_id, &(WDAT.XACLS_ONEFS_FILE), "acl4onefs");
-            pw_acl4_fprintf_onefs(&acl4, RelPathName, &dirent_sb, WDAT.XACLS_ONEFS_FILE);
+            pw_acl4_fprintf_onefs(&acl4, RelPathName, &dirent_sb, 0, WDAT.XACLS_ONEFS_FILE);
+            // klooge: might prefer -l1c 'chmod' format here?    ^^^
          }
       }
 #endif // PWALK_ACLS

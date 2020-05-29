@@ -270,6 +270,7 @@ onefs_ace(char *line)
       trustee_prefix = "";
    }
    nch = strlen(trustee_prefix);
+
    strncpy(trustee_name, pp + nch, p_ace_type - (pp+nch));	// up to " allow " or " deny "
    trustee_name[p_ace_type - (pp+nch)] = '\0';
    if (DEBUG) printf("@@: \"%s\" \"%s\"\n", trustee_prefix, trustee_name);
@@ -299,7 +300,7 @@ onefs_ace(char *line)
       strcpy(trustee, "creator_owner");
    } else if (strncmp(pp, "creator_group ", 14) == 0) {
       strcpy(trustee, "creator_group");
-   } else if (strncmp(pp, "owner_rights ", 13) == 0) {
+   } else if (strncmp(pp, "Owner Rights ", 13) == 0) {	// OneFS weirdness!
       strcpy(trustee, "owner_rights");
    } else {
       return(0);						// No trustee value recognized ...

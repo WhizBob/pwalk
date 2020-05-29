@@ -44,8 +44,8 @@ typedef struct stat stat_t;
 
 // *** FORWARD declarations for pwalk_acls.c functions ***
 void pw_acl4_fprintf_nfs4_setfacl(acl4_t *acl4p, const char *path, FILE *stream);
-void pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, stat_t *sb_p, FILE *stream);
 void pw_acl4_fprintf_chex(acl4_t *acl4p, const char *path, stat_t *sb_p, FILE *stream);
+void pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, stat_t *sb_p, int chmod, FILE *stream);
 void pw_acl4_canonicalize(acl4_t *acl4);
 int pw_acl4_fwrite_binary(acl4_t *acl4, const char *path, FILE **pwOutFILE, char bmode, char *emsg_p, int *err_p);
 int pw_acl4_get_from_posix_acls(const char *abspath, const int dir_flag, int *aclstat, acl4_t *acl4p, char *emsg_p, int *err_p);
@@ -89,6 +89,21 @@ int pw_acl4_get_from_posix_acls(const char *abspath, const int dir_flag, int *ac
 #define ACE4_GENERIC_WRITE                0x00160106	// 'W' - 
 #define ACE4_GENERIC_EXECUTE              0x001200A0	// 'X' - 
 #define ACE4_MASK_ALL                     0x001F01FF	// 'A' - 
+// OneFS compound words expressed as NFS4 bitmasks ...
+#define ONEFS_std_required		0x0F0000
+#define ONEFS_generic_all		0x1001BF
+#define ONEFS_generic_read		0x100089
+#define ONEFS_generic_write		0x100116
+#define ONEFS_generic_exec		0x100040
+#define ONEFS_dir_gen_all		0x1F01FF
+#define ONEFS_dir_gen_read		0x120089
+#define ONEFS_dir_gen_write		0x120116
+#define ONEFS_dir_gen_execute		0x120020
+#define ONEFS_file_gen_all		0x1F01FF
+#define ONEFS_file_gen_read		0x120089
+#define ONEFS_file_gen_write		0x120016
+#define ONEFS_file_gen_execute		0x120020
+#define ONEFS_modify			0x0D0156
 #endif
 
 // Machine-generated OneFS keywords (see pwalk_acls_h_generate.c) ...

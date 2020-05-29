@@ -326,9 +326,13 @@ pw_acl4_fprintf_chex(acl4_t *acl4p, const char *path, stat_t *sb_p, FILE *stream
 // Passed-in stat() info used to determine if we're doing a file or directory, and also to reference
 // object's UID and GID values.
 // WARNING: No bounds-checking!  klooge!  SUGGESTED: Pass in a 256-byte buffer!
+//
+// NOTE: Passed-in chmod=0 means 'output in OneFS ls -led format',
+//       ... otherwise, 'output in OneFS chmod -E format'
+//
 
 static void
-pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
+pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p, int chmod)
 {
     char *p;
     int i;
@@ -344,24 +348,28 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
     //		<n> (ACE4_IDENTIFIER_GROUP) -> group:<gid=n>
     //		GROUP@ (dir) -> SID:S-1-3-1 (creator_group)
     //		EVERYONE@ -> SID:S-1-1-0 (everyone)
-    if (ace4->who[0] == 'E') {				// EVERYONE@
-        p += sprintf(p, "SID:S-1-1-0 ");
-    } else if (isdigit(ace4->who[0])) {			// named (numeric) ...
+    // OneFS chmod: ACE must begin with 'user', 'group', 'everyone', 'creator_owner', 'creator_group', or 'owner_rights'
+
+    if (ace4->who[0] == 'E') {						// EVERYONE@
+        p += sprintf(p, chmod ? "everyone " : "SID:S-1-1-0 ");
+    } else if (isdigit(ace4->who[0])) {					// named (numeric) ...
         if (ace4->flags & ACE4_IDENTIFIER_GROUP) {
-            p += sprintf(p, "group:%s ", ace4->who);	// ... group.
+            p += sprintf(p, "group%c%s ", chmod ? ' ' : ':', ace4->who);	// ... group.
         } else {
-	    p += sprintf(p, "user:%s ", ace4->who);	// ... user.
+	    p += sprintf(p, "user%c%s ", chmod ? ' ' : ':', ace4->who);	// ... user.
         }
-    } else if (ace4->who[0] == 'O') {			// OWNER@
+    } else if (ace4->who[0] == 'O') {					// OWNER@
         if (S_ISDIR(sb_p->st_mode) && (ace4->flags & ACE4_INHERIT_ONLY_ACE))
-	    p += sprintf(p, "SID:S-1-3-0 ");
+	    p += sprintf(p, chmod ? "creator_owner " : "SID:S-1-3-0 ");
         else
-            p += sprintf(p, "user:<owner-uid=%d> ", sb_p->st_uid);
-    } else if (ace4->who[0] == 'G') {			// GROUP@
+            if (chmod) p += sprintf(p, "user %d ", sb_p->st_uid);
+            else      p += sprintf(p, "user:%d <owner-uid> ", sb_p->st_uid);
+    } else if (ace4->who[0] == 'G') {					// GROUP@
         if (S_ISDIR(sb_p->st_mode) && (ace4->flags & ACE4_INHERIT_ONLY_ACE))
-	    p += sprintf(p, "SID:S-1-3-1 ");
+	    p += sprintf(p, chmod ? "creator_group " : "SID:S-1-3-1 ");
         else
-            p += sprintf(p, "group:<owner-gid=%d> ", sb_p->st_gid);
+            if (chmod) p += sprintf(p, "group %d ", sb_p->st_gid);
+            else       p += sprintf(p, "group:%d <owner-gid> ", sb_p->st_gid);
     }
 
     // <ace4 type> (allow or deny) ...
@@ -373,11 +381,10 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
     maskval = ace4->mask & ACE4_MASK_ALL;		// For subtractive translation (most-expressive-to-least)
     mask_done = 0;
 
-#if (0)	// DEVELOPMENTAL; need to expunge ONEFS_* references
-    // STEP #1: Do GENERIC mask bit groupings ...
+    // STEP #1: See if major GENERIC masks match ...
     if (S_ISDIR(sb_p->st_mode)) {
         if ((maskval & ONEFS_dir_gen_all) == ONEFS_dir_gen_all) {
-            p += sprintf(p, "dir_gen_all,"); mask_done = ONEFS_dir_gen_all;
+            p += sprintf(p, "dir_gen_all,"); mask_done |= ONEFS_dir_gen_all;
         } else {
             if ((maskval & ONEFS_dir_gen_read) == ONEFS_dir_gen_read) {
                 p += sprintf(p, "dir_gen_read,"); mask_done |= ONEFS_dir_gen_read;
@@ -391,7 +398,7 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
         } 
     } else {
         if ((maskval & ONEFS_file_gen_all) == ONEFS_file_gen_all) {
-            p += sprintf(p, "file_gen_all,"); mask_done = ONEFS_file_gen_all;
+            p += sprintf(p, "file_gen_all,"); mask_done |= ONEFS_file_gen_all;
         } else {
             if ((maskval & ONEFS_file_gen_read) == ONEFS_file_gen_read) {
                 p += sprintf(p, "file_gen_read,"); mask_done |= ONEFS_file_gen_read;
@@ -406,7 +413,23 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
     }
     maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
 
-    // STEP #2: For non-directories, see if BSD 'modify' matches ...
+    // STEP #2: See if lesser GENERIC mappings match ...
+    if ((maskval & ONEFS_generic_all) == ONEFS_generic_all) {
+        p += sprintf(p, "generic_all,"); mask_done |= ONEFS_generic_all;
+    } else {
+        if ((maskval & ONEFS_generic_read) == ONEFS_generic_read) {
+            p += sprintf(p, "generic_read,"); mask_done |= ONEFS_generic_read;
+        } 
+        if ((maskval & ONEFS_generic_write) == ONEFS_generic_write) {
+            p += sprintf(p, "generic_write,"); mask_done |= ONEFS_generic_write;
+        } 
+        if ((maskval & ONEFS_generic_exec) == ONEFS_generic_exec) {
+            p += sprintf(p, "generic_exec,"); mask_done |= ONEFS_generic_exec;
+        } 
+    } 
+    maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
+
+    // STEP #3: For non-directories, see if BSD 'modify' matches ...
     if (!S_ISDIR(sb_p->st_mode)) {
         if ((maskval & ONEFS_modify) == ONEFS_modify) {
             p += sprintf(p, "modify,"); mask_done |= ONEFS_modify;
@@ -414,14 +437,13 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
         }
     }
 
-    // STEP #3: See if 'std_required' matches ...
+    // STEP #4: See if 'std_required' matches ...
     if ((maskval & ONEFS_std_required) == ONEFS_std_required) {
         p += sprintf(p, "std_required,"); mask_done |= ONEFS_std_required;
         maskval &= (~mask_done & ACE4_MASK_ALL); // TAKE AWAY bits we've already expressed ...
     }
-#endif // (0) DEVELOPMENTAL
 
-    // STEP #4: Match remaining 14 individual permissions ...
+    // STEP #5: Match remaining 14 individual permissions ...
     if (S_ISDIR(sb_p->st_mode)) {
         if (maskval & ACE4_LIST_DIRECTORY   ) p += sprintf(p, "list,");
         if (maskval & ACE4_ADD_FILE         ) p += sprintf(p, "add_file,");
@@ -472,7 +494,7 @@ pw_acl_ace4_sprintf_onefs(char *acl_str, ace4_t *ace4, stat_t *sb_p)
 // Show ACL4 as we expect BSD/OneFS 'ls -lend' would show it ...
 
 void
-pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, FILE *stream)
+pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, int chmod, FILE *stream)
 {
     char ace4_string[256];
     char mode_s[16], type;
@@ -482,15 +504,16 @@ pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, FILE *
     if (acl4p == NULL || acl4p->n_aces == 0)
         return;
 
-    // // Output path semi-ls-l-like ...
-    // format_mode_bits(mode_s, sb_p->st_mode);
-    // if (path && path[0]) fprintf(stream, "%s %d %3d %3d %6lld %s\n",
-    //    mode_s, sb_p->st_nlink, sb_p->st_uid, sb_p->st_gid, sb_p->st_size, path);
-
-    // Output chmod -E preamble ...
+    // klooge: output pathnames in commands should be ASCII-fied rather than quoted ...
     if (path && path[0]) {
-        fprintf(stream, "chown %d:%d %s\n", sb_p->st_uid, sb_p->st_gid, path);
-        fprintf(stream, "chmod -E %s <<END\n", path);
+        if (chmod) {		// Output chmod -E preamble ...
+            fprintf(stream, "chown %d:%d \"%s\"\n", sb_p->st_uid, sb_p->st_gid, path);
+            fprintf(stream, "chmod -E \"%s\" <<END\n", path);
+        } else {		// Output path semi-ls-l-like ...
+            format_mode_bits(mode_s, sb_p->st_mode);
+            fprintf(stream, "%s + %d %3d %3d %6lld %s\n",
+                mode_s, sb_p->st_nlink, sb_p->st_uid, sb_p->st_gid, sb_p->st_size, path);
+        }
     }
 
     // Format each ACE in sequence ...
@@ -501,10 +524,11 @@ pw_acl4_fprintf_onefs(acl4_t *acl4p, const char *path, struct stat *sb_p, FILE *
         else if (acl4p->ace4[i].type == ACE4_SYSTEM_ALARM_ACE_TYPE) type = 'L';
         else type = '?';
         //fprintf(stream, "%d: %c %06x.%02x %s\n", i, type, acl4p->ace4[i].mask, acl4p->ace4[i].flags, acl4p->ace4[i].who);
-        pw_acl_ace4_sprintf_onefs(ace4_string, acl4p->ace4 + i, sb_p);
-        fprintf(stream, " %d: %s\n", i, ace4_string);
+        pw_acl_ace4_sprintf_onefs(ace4_string, acl4p->ace4 + i, sb_p, chmod);
+        if (!chmod) fprintf(stream, " %d: ", i);
+        fprintf(stream, "%s\n", ace4_string);
     }
-    if (path && path[0]) fprintf(stream, "END\n");
+    if (path && path[0] && chmod) fprintf(stream, "END\n");
 }
 
 // CANONICALIZATION FUNCTIONS ...
