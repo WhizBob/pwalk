@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.09b3"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.09b4"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
