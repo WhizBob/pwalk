@@ -1,9 +1,5 @@
 # pwalk
 
-*** NOTICE: 2.05b3 was incorrectly committed as 2.05b8 (8 versus 3).  The next push will  ***
-*** will end with b4, and the b8 anomally will live in infamy. This build purports to     ***
-*** correct major brokeness in the ACL-related code and related utilities.                ***
-
 This repository contains a high-speed multi-threaded treewalk utility called 'PowerWalk' (pwalk)
 for various ends including metadata extraction and formatting, tactical filesystem repair work,
 and utility operations such as bulk file deletion.  Also included is an assortment of ancillary
@@ -71,3 +67,10 @@ To unpack this format, the recipient should take the following steps;
 		o  pwalk/bin/* will contain the last-built pwalk-related binaries
 
 NOTE: The various bin/* directories are NOT assured to be in-sync from the same source code!
+
+*** ERRATA ***
+
+NOTICE: 2.05b3 was incorrectly committed as 2.05b8 (8 versus 3).  The next push will  ***
+will end with b4, and the b8 anomally will live in infamy. This build purports to     ***
+correct major brokeness in the ACL-related code and related utilities.                ***
+
