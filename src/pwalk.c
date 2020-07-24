@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.09b4"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.10a1"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -119,6 +119,7 @@
 #include <sys/types.h>
 #include <grp.h>
 #include <pwd.h>
+#include <regex.h>
 #include <time.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -250,21 +251,24 @@ static char *WACLS_CMD = NULL;  		// For +wacls= arg
 
 // For selection-related options ...
 static int SELECT_OPTIONS = 0;			// Any of the following -select option(s) specified ...
+static regex_t SELECT_REGEX_REGEX;		// ... for parsed -select_regex=<pattern> arg ...
+static char *SELECT_REGEX_PATTERN;
 #define SELECT_HARDCODED	0x0000001	// -select specified
 #define SELECT_LFN		0x0000002	// -select=lfn specified
-#define SELECT_STUBS		0x0000004	// -select=stubs specified (OneFS only)
-#define SELECT_NOSTUBS		0x0000008	// -select=nostubs specified (OneFS only)
-#define SELECT_FAKE		0x0000010	// -select=fake specified (OneFS only)
-#define SELECT_SINCE_TIME	0x0000020	// -since= specified
-#define SELECT_SINCE_ATIME	0x0000040	// -since_atime= specified
-#define SELECT_SINCE_MTIME	0x0000080	// -since_mtime= specified
-#define SELECT_SINCE_CTIME	0x0000100	// -since_ctime= specified
-#define SELECT_SINCE_BIRTH	0x0000200	// -since_birth= specified
-#define SELECT_NOTSINCE_TIME	0x0000400	// -notsince= specified
-#define SELECT_NOTSINCE_ATIME	0x0000800	// -notsince_atime= specified
-#define SELECT_NOTSINCE_MTIME	0x0001000	// -notsince_mtime= specified
-#define SELECT_NOTSINCE_CTIME	0x0002000	// -notsince_ctime= specified
-#define SELECT_NOTSINCE_BIRTH	0x0004000	// -notsince_birth= specified
+#define SELECT_REGEX		0x0000004	// -select_regex= specified
+#define SELECT_STUBS		0x0000008	// -select=stubs specified (OneFS only)
+#define SELECT_NOSTUBS		0x0000010	// -select=nostubs specified (OneFS only)
+#define SELECT_FAKE		0x0000020	// -select=fake specified (OneFS only)
+#define SELECT_SINCE_TIME	0x0000040	// -since= specified
+#define SELECT_SINCE_ATIME	0x0000080	// -since_atime= specified
+#define SELECT_SINCE_MTIME	0x0000100	// -since_mtime= specified
+#define SELECT_SINCE_CTIME	0x0000200	// -since_ctime= specified
+#define SELECT_SINCE_BIRTH	0x0000400	// -since_birth= specified
+#define SELECT_NOTSINCE_TIME	0x0000800	// -notsince= specified
+#define SELECT_NOTSINCE_ATIME	0x0001000	// -notsince_atime= specified
+#define SELECT_NOTSINCE_MTIME	0x0002000	// -notsince_mtime= specified
+#define SELECT_NOTSINCE_CTIME	0x0004000	// -notsince_ctime= specified
+#define SELECT_NOTSINCE_BIRTH	0x0008000	// -notsince_birth= specified
 static uid_t FAKE_UID_LO = 1000000;		// OneFS auto-gen ranges ...
 static uid_t FAKE_UID_HI = 4000000;
 static gid_t FAKE_GID_LO = 1000000;
@@ -448,14 +452,13 @@ usage(void)
 #endif
 #if PWALK_ACLS // ACL-related commandline options ...
    printf("	+wacls=<command>	// also ... write derived binary NFS4 ACLs to <command>\n");
-   printf("	+xacls=[bin|nfs|chex]	// also ... create .acl4bin, .acl4nfs, .acl4chex outputs\n");
+   printf("	+xacls=<format>		// also ... create .acl4<format> outputs for (bin,chex,nfs,onefs)\n");
 #endif // PWALK_ACLS
    printf("   Main <option> values are:\n");
    printf("	-dop=<n>		// specifies the Degree Of Parallelism (max number of workers)\n");
    printf("	-gz			// gzip primary output files\n");
    printf("	-dryrun			// suppress making any changes (with -fix_times & -rm)\n");
    printf("	-pfile=<pfile>		// specify parameters for [source|target|output|select|csv]\n");
-
    printf("	-output=<output_dir>	// output directory location; (default is $CWD)\n");
    printf("	-source=<source_dir>	// source directory; must be absolute path (default is $CWD)\n");
    printf("	-target=<target_dir>	// target directory; optional w/ -fix_times, required w/ -cmp!\n");
@@ -469,20 +472,23 @@ usage(void)
    printf("	+crc			// show CRC for each file (READS ALL FILES!)\n");
    printf("	+md5  (COMING SOON!)	// show MD5 for each file (READS ALL FILES!)\n");
    printf("	+tstat			// show hi-res timing statistics in some outputs\n");
-   printf("   File selection <option> values are:	(<ref_time> is <epoch_time> | ?time(<ref_file>)\n");
+   printf("   File selection <option> values are implicitly AND'ed together:\n");
    printf("	+span			// include directories that span filesystems (OFF by default)\n");
    printf("	+.ifsvar		// include .ifsvar directories (OFF by default)\n");
    printf("	+.snapshot		// include .snapshot[s] directories (OFF by default)\n");
    printf("	-select			// select files with hardcoded selection criteria\n");
-#if defined(__ONEFS__)
-   // printf("	-select=fake		// select files with persisted fake IDs (OneFS) DEVELOPMENTAL\n");
-   printf("	-select=[no]stubs	// select files with or without stubs (OneFS)\n");
-#endif
+   printf("	-select=fake		// DEVELOPMENTAL: select files with persisted 'fake' ids (uid/gid)\n");
    // `MAXNAMLEN' is the BSD name for what POSIX calls `NAME_MAX'.
    // /usr/include/stdio.h:   FILENAME_MAX	Maximum length of a filename.
    // /usr/include/dirent.h:#    define MAXNAMLEN	NAME_MAX
    printf("	-select=lfn		// select files with long filenames > 255 bytes (%d max)\n", FILENAME_MAX);
-   printf("	// NOTE: prefix -since* options with 'not' for a '<=' compare; e.g. '-notsince='\n");
+   printf("	-select_regex=<regex>	// select files matching <regex> (case-insensitive, extended)\n");
+#if defined(__ONEFS__)
+   printf("	-select=[no]stubs	// (OneFS) select files with or without stubs\n");
+#endif
+   printf("	# NOTE: For timestamp-related selection options ...\n");
+   printf("	# ... <ref_time> is <epoch_time> | ?time(<pathname>)\n");
+   printf("	# ... prefix option with 'not' for a '<=' compare; e.g. '-notsince='\n");
    printf("	-since=<ref_time>	// select files with mtime or ctime > mtime(<ref_time>)\n");
    printf("	-since_atime=<ref_time>	// select files with atime > atime(<ref_time>)\n");
    printf("	-since_mtime=<ref_time>	// select files with mtime > mtime(<ref_time>)\n");
@@ -609,13 +615,18 @@ close_all_outputs(void)
    // Close per-worker outputs ...
    for (w_id=0; w_id<N_WORKERS; w_id++) {
       // Close per-worker primary output WLOG file (iff open) ...
-      if (WLOG) {
+      if (WLOG) {			// Close worker log file/pipe ...
+         fflush(WLOG);
          if (Opt_GZ) {			// Close log stream ...
-#if defined(__OSX__)			// OSX pclose() hangs for unwritten streams!
-            fflush(WLOG);		// pwalk exit will tidy up the gzips
+#if defined(__OSX__)
+            // OSX pwalk version has historically had issues with incomplete .gz outputs.
+            // ... as of 2.09b5, this fcntl seems to solve that issue.
+            fcntl(fileno(WLOG), F_FULLFSYNC, NULL);
+            // OSX pclose() has historically hung for unwritten streams!
+            // ... using fclose() here seems to bypass that issue.
             fclose(WLOG);
 #else
-            if ((rc = pclose(WDAT.wlog)))
+            if ((rc = pclose(WLOG)))
                fprintf(stderr, "pclose(WLOG) w_id=%d rc=%d\n", w_id, rc);
 #endif
          } else {
@@ -2109,83 +2120,130 @@ pwalk_tally_output()
    fclose(TALLY);
 }
 
+// -select_regex=<pattern> support ...
+
+void
+select_regex_parse(char *pattern)
+{
+
+   if (SELECT_OPTIONS&SELECT_REGEX) {
+      fprintf(stderr, "FATAL: Only one -select_regex=<pattern> option can be specified!\n"); exit(-1);
+   }
+   if (regcomp(&SELECT_REGEX_REGEX, pattern, REG_EXTENDED|REG_ICASE)) {
+      fprintf(stderr, "FATAL: -select_regex=\"%s\" -- bad pattern!\n", pattern); exit(-1);
+   }
+   SELECT_OPTIONS |= SELECT_REGEX;
+   SELECT_REGEX_PATTERN = pattern;
+}
+
+int
+select_regex_match(char *filename)
+{
+   return(regexec(&SELECT_REGEX_REGEX, filename, 0, NULL, 0) == 0 ? 1 : 0);
+   // size_t nmatch, regmatch_t pmatch[restrict], int eflags);
+}
+
+
 // selected() is the execute-time file-selection logic. Files and directories which return FALSE
 // will not be output.
 //
 // NOTE: st_birthtime will NOT be accurate on Linux NFS client! It will probably be a copy of ctime!
 // So, avoid trying to select on it unless native to OneFS or macOS SMB.
+// NOTE: An unusual coding convention is used here to simplify conditional expressions;
+//	if (<include_condition>) ; else return (0);
+//	... where a NULL STATEMENT follow the 'if' ...
+//	... otherwise, applying De Morgan's law to formulate EXCLUDE conditions would be even uglier!
 
 int
 selected(char *filename, struct dirent *dirent, struct stat *sb)
 {
    int d_namlen;		// strlen() or d_namlen
 
+   if (SELECT_OPTIONS == 0) return (1);		// Default is yes/select with NO selection options
+
    if (SELECT_OPTIONS&SELECT_HARDCODED) {	// ### PUT CUSTOM SELECT CODE HERE! ###
-      // Excludes return 0 before includes are evaluated ...
-      // CAUTION: default is to exclude!
-      // if (S_ISDIR(sb->st_mode)) return (0);		// Skip dirs
+      // NOTE: default is to INCLUDE, so the action for each test is ...
+      //       ... for any EXCLUSION condition: return 0 immediately
+      //       ... for any UNCONDITIONAL INCLUSION condition: return 1 immediately
+      //       ... for any CUMULATIVE INCLUSION condition: use the '; else return (0)' convention
+      // By 'CUMULATIVE', we mean that *all* such conditions must be met to select file.
    
-      // Includes ..
-      // if (!S_ISREG(sb->st_mode)) return (1);		// Select *only* non-ordinary files
-      // if (strstr(filename, "|")) return (1);		// Select *only* names with embedded '|'
-      // if (sb->st_uid == 0) return (1);		// Select *only* root-owned files
+      // EXAMPLES ...
+      // if (!S_ISREG(sb->st_mode)) ...			// Non-ordinary files
+      // if (strstr(filename, "|")) ...			// Names with embedded '|'
+      // if (sb->st_uid == 0) ...			// Root-owned files
 
-      if (sb->st_size >= 10485760) return(1);		// Select files >= 10 MB ### CUSTOM ###
+      if (sb->st_size < 10485760) return (0);		// CUSTOM: Files >= 10 MB (CUMULATIVE)
    }
 
-   // -select=fake (Files/dirs with persisted UID or GID in OneFS 'fake' range)
-#if defined(__ONEFS__)
+   // -select_regex=<pattern> (case-insensitive) ...
+   if (SELECT_OPTIONS&SELECT_REGEX) {
+      if (!select_regex_match(filename)) return(0);
+   }
+
+   // -select=fake (Files/dirs with persisted UID or GID in OneFS 'fake' range) ...
    if (SELECT_OPTIONS&SELECT_FAKE) {
-      // Get SD ...
-// xxxxx(&od_own_is_uid, &od_grp_is_gid
-      if ((sb->st_uid >=  FAKE_UID_LO && sb->st_uid <= FAKE_UID_HI) ||
-          (sb->st_gid >=  FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI)) return(1);
+      if ((sb->st_uid >= FAKE_UID_LO && sb->st_uid <= FAKE_UID_HI) ||
+          (sb->st_gid >= FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI)) ; else return (0);
    }
-#endif
 
    // -[not]since*= selections ...
-   if (SELECT_OPTIONS&SELECT_SINCE_TIME &&
-       ((sb->st_ctimespec.tv_sec > SELECT_SINCE_TIME_T) ||
-        (sb->st_mtimespec.tv_sec > SELECT_SINCE_TIME_T))) return (1);
-   if (SELECT_OPTIONS&SELECT_SINCE_ATIME && (sb->st_atimespec.tv_sec > SELECT_SINCE_ATIME_T)) return (1);
-   if (SELECT_OPTIONS&SELECT_SINCE_MTIME && (sb->st_mtimespec.tv_sec > SELECT_SINCE_MTIME_T)) return (1);
-   if (SELECT_OPTIONS&SELECT_SINCE_CTIME && (sb->st_ctimespec.tv_sec > SELECT_SINCE_CTIME_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_TIME) {
+      if ((sb->st_ctimespec.tv_sec > SELECT_SINCE_TIME_T) ||
+          (sb->st_mtimespec.tv_sec > SELECT_SINCE_TIME_T)) ; else return (0);
+   }
+   if (SELECT_OPTIONS&SELECT_SINCE_ATIME)
+      if (sb->st_atimespec.tv_sec <= SELECT_SINCE_ATIME_T) return (0);
+   if (SELECT_OPTIONS&SELECT_SINCE_MTIME)
+      if (sb->st_mtimespec.tv_sec <= SELECT_SINCE_MTIME_T) return (0);
+   if (SELECT_OPTIONS&SELECT_SINCE_CTIME)
+      if (sb->st_ctimespec.tv_sec <= SELECT_SINCE_CTIME_T) return (0);
 #if defined(__ONEFS__) || defined(__APPLE__)
-   if (SELECT_OPTIONS&SELECT_SINCE_BIRTH && (sb->st_birthtimespec.tv_sec > SELECT_SINCE_BIRTH_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_SINCE_BIRTH)
+      if (sb->st_birthtimespec.tv_sec <= SELECT_SINCE_BIRTH_T) return (0);
 #endif
    // Note that for -notsince, per De Morgan’s Law, the OR turns into an AND, and the
    // birthtime and atime are also taken into consideration.
-   if (SELECT_OPTIONS&SELECT_NOTSINCE_TIME && (
-        (sb->st_ctimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
-        (sb->st_atimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_TIME) {
+      if ((sb->st_ctimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+          (sb->st_atimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
 #if defined(__ONEFS__) || defined(__APPLE__)
-        (sb->st_birthtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
+          (sb->st_birthtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T) &&
 #endif
-        (sb->st_mtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T)
-       )) return (1);
-   if (SELECT_OPTIONS&SELECT_NOTSINCE_ATIME && (sb->st_atimespec.tv_sec <= SELECT_NOTSINCE_ATIME_T)) return (1);
-   if (SELECT_OPTIONS&SELECT_NOTSINCE_MTIME && (sb->st_mtimespec.tv_sec <= SELECT_NOTSINCE_MTIME_T)) return (1);
-   if (SELECT_OPTIONS&SELECT_NOTSINCE_CTIME && (sb->st_ctimespec.tv_sec <= SELECT_NOTSINCE_CTIME_T)) return (1);
+          (sb->st_mtimespec.tv_sec <= SELECT_NOTSINCE_TIME_T)
+         ) ; else return (0);
+   }
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_ATIME)
+      if (sb->st_atimespec.tv_sec > SELECT_NOTSINCE_ATIME_T) return (0);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_MTIME)
+      if (sb->st_mtimespec.tv_sec > SELECT_NOTSINCE_MTIME_T) return (0);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_CTIME)
+      if (sb->st_ctimespec.tv_sec > SELECT_NOTSINCE_CTIME_T) return (0);
 #if defined(__ONEFS__) || defined(__APPLE__)
-   if (SELECT_OPTIONS&SELECT_NOTSINCE_BIRTH && (sb->st_birthtimespec.tv_sec <= SELECT_NOTSINCE_BIRTH_T)) return (1);
+   if (SELECT_OPTIONS&SELECT_NOTSINCE_BIRTH)
+      if (sb->st_birthtimespec.tv_sec > SELECT_NOTSINCE_BIRTH_T) return (0);
 #endif
 
    // -select=lfn ...
+   if (SELECT_OPTIONS&SELECT_LFN) {
 #if defined(__LINUX__)
-   d_namlen = strlen(dirent->d_name);
+      d_namlen = strlen(dirent->d_name);
 #else
-   d_namlen = dirent->d_namlen;
+      d_namlen = dirent->d_namlen;
 #endif
-   if (SELECT_OPTIONS&SELECT_LFN && (d_namlen > 255)) return (1);
+      if (d_namlen <= 255) return (0);
+   }
 
    // -select=[no]stubs ...
 #if defined(__ONEFS__)
-   if (SELECT_OPTIONS&SELECT_STUBS && (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
-   if (SELECT_OPTIONS&SELECT_NOSTUBS && !(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (1);
+   if (SELECT_OPTIONS&SELECT_STUBS)
+      if (!(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (0);
+   if (SELECT_OPTIONS&SELECT_NOSTUBS)
+      if (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED)) return (0);
 #endif
 
-   // Default is NOT selected ...
-   return (0);
+   // Default is selected ...
+   return (1);
 }
 
 // @@@ SECTION: asciify & de_asciify @@@
@@ -2690,7 +2748,7 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    long long ns_stat, ns_getacl;	// ns for stat() and get ACL calls
    char ns_stat_s[32], ns_getacl_s[32];	// Formatted timing values
    char mode_str[16];			// Formatted mode bits
-   off_t bytes_allocated;		// Cumulative per-file allocated space
+   off_t bytes_physical;		// Cumulative per-file allocated space
 
    char *FileName;			// Pointer to filename (dirent)
    char *RelPathDir;			// Pointer to WDAT.DirPath (value popped from FIFO)
@@ -2776,10 +2834,12 @@ directory_scan(int w_id)		// CAUTION: MT-safe and RE-ENTRANT!
    if (Opt_REDACT)
       redact_path(RedactedRelPathDir, RelPathDir, curdir_sb.st_ino, w_id);
 
-   // Re-Initialize Directory Subtotals (DS) ...
+   // Initialize Directory Subtotals stats block (DS) ...
    bzero(&DS, sizeof DS);
-   DS.NBytesLogical = curdir_sb.st_size;
-   DS.NBytesPhysical = bytes_allocated = curdir_sb.st_blocks * ST_BLOCK_SIZE;
+   if (SELECT_OPTIONS == 0) { // Skip including directory sizes when -select options in use ...
+      DS.NBytesLogical = curdir_sb.st_size;
+      DS.NBytesPhysical = bytes_physical = curdir_sb.st_blocks * ST_BLOCK_SIZE;
+   }
 
    // @@@ GATHER & OUTPUT (directory): -cmp mode for the directory itself ...
    if (Cmd_CMP) {
@@ -3063,11 +3123,13 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
          DS.NOthers += 1;
       }
 
-      // NOTE: To avoid double-counting, we only count nominal directory sizes ONCE; when we pop them.
-      // However, directory output lines will reflect the sizes reported by stat().
+      // NOTE: To avoid double-counting, we only count nominal directory sizes ONCE; when we pop them,
+      // and even then only if -select options are not being used. In all cases, however, directory
+      // output lines will still reflect the sizes reported by stat() -- even if they are not counted
+      // towards the -select'ed totals..
       if (!S_ISDIR(dirent_sb.st_mode)) {
          DS.NBytesLogical += dirent_sb.st_size;
-         DS.NBytesPhysical += bytes_allocated = dirent_sb.st_blocks * ST_BLOCK_SIZE;
+         DS.NBytesPhysical += bytes_physical = dirent_sb.st_blocks * ST_BLOCK_SIZE;
       }
 
       // @@@ GATHER/dirent: Owner name & group name ...
@@ -3173,7 +3235,7 @@ dirent_meta_munge: // @@@
             fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
          } else if (Cmd_XML) {
             fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
-               bytes_allocated, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
+               bytes_physical, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
                (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
          }
          directory_reported = 1;
@@ -3181,9 +3243,17 @@ dirent_meta_munge: // @@@
 
       // @@@ OUTPUT/dirent: Mutually-exclusive primary modes ...
       if (Cmd_LS) {			// -ls
-         fprintf(WLOG, "%s %u %lld %s%s%s\n",
-            (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink, (long long) dirent_sb.st_size,
-             REDACT_FileName, ns_stat_s, crc_str);
+         if (SELECT_OPTIONS&SELECT_FAKE) {
+            // Include uid and gid in output ...
+            fprintf(WLOG, "%s %u %u %u %lld %s%s%s\n",
+                    (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink,
+                    dirent_sb.st_uid, dirent_sb.st_gid,
+                    (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
+         } else {
+            fprintf(WLOG, "%s %u %lld %s%s%s\n",
+                    (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink,
+                    (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
+         }
       } else if (Cmd_LSC) {		// -lsc
          fprintf(WLOG, "%c %s\n", mode_str[0], REDACT_FileName);
       } else if (Cmd_LSF) {		// -lsf
@@ -3281,7 +3351,7 @@ dir_summary:
             fprintf(WLOG, "@ %s\n", REDACT_RelPathDir);
          } else if (Cmd_XML) {
             fprintf(WLOG, "<directory>\n<path> %lld%s%s %u %lld %s%s </path>\n",
-               bytes_allocated, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
+               bytes_physical, (Opt_PMODE ? " " : ""), mode_str, curdir_sb.st_nlink,
                (long long) curdir_sb.st_size, REDACT_RelPathDir, ns_stat_s);
          }
          directory_reported = 1;	// FWIW ... nobody cares after here.
@@ -3569,13 +3639,15 @@ process_arglist(int argc, char *argv[])
          PWdebug += nc;
          fprintf(stderr, "DEBUG: PWdebug=%d\n", PWdebug);
       // -select* <option> values ...
-      } else if (strcmp(arg, "-select") == 0) {		// Hard-coded -select criteria (klooge)
+      } else if (strcmp(arg, "-select") == 0) {			// Hard-coded -select criteria (klooge)
          SELECT_OPTIONS |= SELECT_HARDCODED;
-      } else if (strcmp(arg, "-select=lfn") == 0) {	// Long file names
-         SELECT_OPTIONS |= SELECT_LFN;
-#if defined(__ONEFS__)					// Only on OneFS native!
-      } else if (strcmp(arg, "-select=fake") == 0) {
+      } else if (strcmp(arg, "-select=fake") == 0) {		// Owner or group in 'fake' range
          SELECT_OPTIONS |= SELECT_FAKE;
+      } else if (strcmp(arg, "-select=lfn") == 0) {		// Long file names
+         SELECT_OPTIONS |= SELECT_LFN;
+      } else if (strncmp(arg, "-select_regex=", 14) == 0) {	// Select by regex
+         select_regex_parse(arg + 14);
+#if defined(__ONEFS__)						// Only on OneFS native!
       } else if (strcmp(arg, "-select=stubs") == 0) {
          SELECT_OPTIONS |= SELECT_STUBS;
       } else if (strcmp(arg, "-select=nostubs") == 0) {
@@ -3828,6 +3900,7 @@ main(int argc, char *argv[])
       fprintf(Plog, " target[%d] = %s\n", i, TARGET_PATHS[i]);
 
    if (SELECT_OPTIONS&SELECT_HARDCODED) fprintf(Plog, " -select hardcoded enabled\n");
+   if (SELECT_OPTIONS&SELECT_REGEX) fprintf(Plog, " -select_regex=\"%s\" enabled\n", SELECT_REGEX_PATTERN);
    if (SELECT_OPTIONS&SELECT_LFN) fprintf(Plog, " -select=lfn enabled\n");
    if (SELECT_OPTIONS&SELECT_STUBS) fprintf(Plog, " -select=stubs enabled\n");
    if (SELECT_OPTIONS&SELECT_NOSTUBS) fprintf(Plog, " -select=nostubs enabled\n");
@@ -4027,7 +4100,7 @@ main(int argc, char *argv[])
       fprintf(Plog, "%16llu - byte%s physical (%4.2f GB)\n",
          GS.NBytesPhysical, (GS.NBytesPhysical != 1) ? "s" : "", GS.NBytesPhysical / 1000000000.);
       if (GS.NBytesLogical > 0) {	// protect divide ...
-         fprintf(Plog, "%15.2f%% - overall overhead ((allocated-nominal)*100.)/nominal)\n",
+         fprintf(Plog, "%15.2f%% - overall overhead = (physical - logical) * 100 / logical\n",
             ((GS.NBytesPhysical - GS.NBytesLogical)*100.)/GS.NBytesLogical);
       }
       fprintf(Plog, "%16llx - MAX inode value selected\n", GS.MAX_inode_Value_Selected);
