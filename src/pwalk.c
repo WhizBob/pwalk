@@ -1,7 +1,7 @@
 // pwalk.c - by Bob Sneed (Bob.Sneed@dell.com) - FREE CODE, based on prior work whose source
 // was previously distributed as FREE CODE.
 
-#define PWALK_VERSION "pwalk 2.10a1"	// See also: CHANGELOG
+#define PWALK_VERSION "pwalk 2.10b1"	// See also: CHANGELOG
 #define PWALK_SOURCE 1
 
 // --- DISCLAIMERS ---
@@ -255,20 +255,21 @@ static regex_t SELECT_REGEX_REGEX;		// ... for parsed -select_regex=<pattern> ar
 static char *SELECT_REGEX_PATTERN;
 #define SELECT_HARDCODED	0x0000001	// -select specified
 #define SELECT_LFN		0x0000002	// -select=lfn specified
-#define SELECT_REGEX		0x0000004	// -select_regex= specified
+#define SELECT_SPARSE		0x0000004	// -select=sparse specified (DEVELOPMENTAL)
 #define SELECT_STUBS		0x0000008	// -select=stubs specified (OneFS only)
 #define SELECT_NOSTUBS		0x0000010	// -select=nostubs specified (OneFS only)
 #define SELECT_FAKE		0x0000020	// -select=fake specified (OneFS only)
-#define SELECT_SINCE_TIME	0x0000040	// -since= specified
-#define SELECT_SINCE_ATIME	0x0000080	// -since_atime= specified
-#define SELECT_SINCE_MTIME	0x0000100	// -since_mtime= specified
-#define SELECT_SINCE_CTIME	0x0000200	// -since_ctime= specified
-#define SELECT_SINCE_BIRTH	0x0000400	// -since_birth= specified
-#define SELECT_NOTSINCE_TIME	0x0000800	// -notsince= specified
-#define SELECT_NOTSINCE_ATIME	0x0001000	// -notsince_atime= specified
-#define SELECT_NOTSINCE_MTIME	0x0002000	// -notsince_mtime= specified
-#define SELECT_NOTSINCE_CTIME	0x0004000	// -notsince_ctime= specified
-#define SELECT_NOTSINCE_BIRTH	0x0008000	// -notsince_birth= specified
+#define SELECT_REGEX		0x0000040	// -select_regex= specified
+#define SELECT_SINCE_TIME	0x0000080	// -since= specified
+#define SELECT_SINCE_ATIME	0x0000100	// -since_atime= specified
+#define SELECT_SINCE_MTIME	0x0000200	// -since_mtime= specified
+#define SELECT_SINCE_CTIME	0x0000400	// -since_ctime= specified
+#define SELECT_SINCE_BIRTH	0x0000800	// -since_birth= specified
+#define SELECT_NOTSINCE_TIME	0x0001000	// -notsince= specified
+#define SELECT_NOTSINCE_ATIME	0x0002000	// -notsince_atime= specified
+#define SELECT_NOTSINCE_MTIME	0x0004000	// -notsince_mtime= specified
+#define SELECT_NOTSINCE_CTIME	0x0008000	// -notsince_ctime= specified
+#define SELECT_NOTSINCE_BIRTH	0x0010000	// -notsince_birth= specified
 static uid_t FAKE_UID_LO = 1000000;		// OneFS auto-gen ranges ...
 static uid_t FAKE_UID_HI = 4000000;
 static gid_t FAKE_GID_LO = 1000000;
@@ -482,10 +483,12 @@ usage(void)
    // /usr/include/stdio.h:   FILENAME_MAX	Maximum length of a filename.
    // /usr/include/dirent.h:#    define MAXNAMLEN	NAME_MAX
    printf("	-select=lfn		// select files with long filenames > 255 bytes (%d max)\n", FILENAME_MAX);
-   printf("	-select_regex=<regex>	// select files matching <regex> (case-insensitive, extended)\n");
+   // DEVELOPMENTAL/SECRET: "sparse" is impossible to accurately detect in most contexts!
+   printf("	-select=sparse		// select files which *appear* to be sparse (DEVELOPMENTAL)\n");
 #if defined(__ONEFS__)
    printf("	-select=[no]stubs	// (OneFS) select files with or without stubs\n");
 #endif
+   printf("	-select_regex=<regex>	// select files matching <regex> (case-insensitive, extended)\n");
    printf("	# NOTE: For timestamp-related selection options ...\n");
    printf("	# ... <ref_time> is <epoch_time> | ?time(<pathname>)\n");
    printf("	# ... prefix option with 'not' for a '<=' compare; e.g. '-notsince='\n");
@@ -2149,19 +2152,37 @@ select_regex_match(char *filename)
 //
 // NOTE: st_birthtime will NOT be accurate on Linux NFS client! It will probably be a copy of ctime!
 // So, avoid trying to select on it unless native to OneFS or macOS SMB.
-// NOTE: An unusual coding convention is used here to simplify conditional expressions;
+// NOTE: An unusual coding convention may be used here to simplify conditional expressions;
 //	if (<include_condition>) ; else return (0);
 //	... where a NULL STATEMENT follow the 'if' ...
-//	... otherwise, applying De Morgan's law to formulate EXCLUDE conditions would be even uglier!
+//	... otherwise, applying De Morgan's law to reformulate some conditions would be even uglier!
 
 int
 selected(char *filename, struct dirent *dirent, struct stat *sb)
 {
    int d_namlen;		// strlen() or d_namlen
+   int is_sparse = 0;		// Unreliable outside of OneFS native!
+   int is_stubbed = 0;		// Only ever TRUE of ONEFS native!
+   long long physical_size;	// = (st_blocks * ST_BLOCK_SIZE)
+   long long logical_size;	// = (st_size)
 
    if (SELECT_OPTIONS == 0) return (1);		// Default is yes/select with NO selection options
 
-   if (SELECT_OPTIONS&SELECT_HARDCODED) {	// ### PUT CUSTOM SELECT CODE HERE! ###
+   // Cheap to compute these whether we use them or not ...
+#if defined(__ONEFS__)
+   // Only on OneFS are these 'accurate' based on flag values ...
+   is_stubbed = (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED)) != 0;
+   is_sparse |= S_ISREG(sb->st_mode) && !is_stubbed && (sb->st_flags & UF_SPARSE);
+#endif
+
+#if defined(__ONEFS__)
+   // -select=[no]stubs ...
+   if (SELECT_OPTIONS&SELECT_STUBS && !is_stubbed) return(0);
+   if (SELECT_OPTIONS&SELECT_NOSTUBS && is_stubbed) return(0);
+#endif
+
+   // >>> ### PUT CUSTOM SELECT CODE HERE! ### <<<
+   if (SELECT_OPTIONS&SELECT_HARDCODED) {
       // NOTE: default is to INCLUDE, so the action for each test is ...
       //       ... for any EXCLUSION condition: return 0 immediately
       //       ... for any UNCONDITIONAL INCLUSION condition: return 1 immediately
@@ -2182,6 +2203,7 @@ selected(char *filename, struct dirent *dirent, struct stat *sb)
    }
 
    // -select=fake (Files/dirs with persisted UID or GID in OneFS 'fake' range) ...
+   // klooge: On OneFS, this should fetch the security descriptor to know what's really persisted.
    if (SELECT_OPTIONS&SELECT_FAKE) {
       if ((sb->st_uid >= FAKE_UID_LO && sb->st_uid <= FAKE_UID_HI) ||
           (sb->st_gid >= FAKE_GID_LO && sb->st_gid <= FAKE_GID_HI)) ; else return (0);
@@ -2224,6 +2246,30 @@ selected(char *filename, struct dirent *dirent, struct stat *sb)
       if (sb->st_birthtimespec.tv_sec > SELECT_NOTSINCE_BIRTH_T) return (0);
 #endif
 
+   // -select=sparse is really tricky business! OneFS gives flags to provide some certainty as
+   // to whether a file has 'holes' (though other filesystems might have other APIs to determine
+   // that) -- but based only on stat(2) data, files may *appear* to be sparse based on ...
+   //	- being inline deduped		// not easily detectable!
+   //	- being inline compressed	// not easily detectable!
+   //	- being on Apple APFS SSD	// not easily detectable; implicitly dedupes zero blocks!
+   //	- being a stub			// sparse file must NOT be a stub
+   //	- being zero- sized or small	// sparse file must have logical size > 256 KB
+   //	- being medium-sized		// sparse file must have (physical - logical) > 1024 KB
+   // On OneFS natively, filesystem flags will prevail in the determination of spareness,
+   // otherwise, sparseness will be determined using stat(2) data in the same manner as on other
+   // pwalk execution environments.
+   if (SELECT_OPTIONS&SELECT_SPARSE) {
+      physical_size = sb->st_blocks * ST_BLOCK_SIZE;	// *signed*
+      logical_size = sb->st_size;			// *signed*
+      is_sparse |= S_ISREG(sb->st_mode) &&
+                   (logical_size > 256*1024) &&
+                   ((logical_size - physical_size) > 1024*1024);
+      if (!is_sparse) return(0);
+      // Fall-through only for files that are determined to be sparse ...
+      if (PWdebug) fprintf(stderr, "DEBUG/sparse: (%lld / %lld = %4.2f%%) %s\n",
+          physical_size, logical_size, 100.*(physical_size*1.)/logical_size, filename);
+   }
+
    // -select=lfn ...
    if (SELECT_OPTIONS&SELECT_LFN) {
 #if defined(__LINUX__)
@@ -2234,15 +2280,7 @@ selected(char *filename, struct dirent *dirent, struct stat *sb)
       if (d_namlen <= 255) return (0);
    }
 
-   // -select=[no]stubs ...
-#if defined(__ONEFS__)
-   if (SELECT_OPTIONS&SELECT_STUBS)
-      if (!(sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED))) return (0);
-   if (SELECT_OPTIONS&SELECT_NOSTUBS)
-      if (sb->st_flags & (SF_CACHED_STUB|SF_FILE_STUBBED)) return (0);
-#endif
-
-   // Default is selected ...
+   // Default result is selected if not excluded by now ...
    return (1);
 }
 
@@ -3011,7 +3049,7 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
       }
 
       // @@@ ACTION(s)/dirent: Depends on whether or not dirent is selected(), whether
-      // it's a directory or not, and the <primary_mode> or pwalk operation.
+      // it's a directory or not, and the <primary_mode> of pwalk operation.
       dirent_selected = (SELECT_OPTIONS == 0) ? 1 : selected(RelPathName, pdirent, &dirent_sb);
       if (dirent_selected) n_dirent_selected += 1;	// "output it"
       dirent_isdir = S_ISDIR(dirent_sb.st_mode);
@@ -3100,7 +3138,8 @@ dirent_read_meta: // @@@ GATHER/dirent: stat/fstatat() info ...
       // @@@ ACTION: PUSH discovered directories (selected() or not!) ...
       if (dirent_isdir) {
          if (!Opt_SPAN && (dirent_sb.st_dev != curdir_sb.st_dev)) {	// +span enforcement
-            fprintf(WERR, "NOTICE: Skipping reference outside filesystem @ \"%s\"\n", AbsPathDir);
+            fprintf(WERR, "NOTICE: Skipping reference outside filesystem \"%s\" @ \"%s\"\n",
+               AbsPathDir, AbsPathName);
             goto next_dirent;
          } else {
             fifo_push(RelPathName, &dirent_sb, w_id);			// PUSH! <<< @$%!#$!! <<< HERE!
@@ -3243,11 +3282,16 @@ dirent_meta_munge: // @@@
 
       // @@@ OUTPUT/dirent: Mutually-exclusive primary modes ...
       if (Cmd_LS) {			// -ls
-         if (SELECT_OPTIONS&SELECT_FAKE) {
-            // Include uid and gid in output ...
+         if (SELECT_OPTIONS&SELECT_FAKE) {		// Include uid and gid in output ...
             fprintf(WLOG, "%s %u %u %u %lld %s%s%s\n",
                     (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink,
                     dirent_sb.st_uid, dirent_sb.st_gid,
+                    (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
+         } else if (SELECT_OPTIONS&SELECT_SPARSE) {	// Include physical size (1k blocks) in the output ...
+            // If ST_BLOCK_SIZE is 512, normalize to 1K units, rounding up ...
+            fprintf(WLOG, "%lld %s %u %lld %s%s%s\n",
+                    (ST_BLOCK_SIZE == 1024) ? dirent_sb.st_blocks : (dirent_sb.st_blocks+1)/2,
+                    (Opt_PMODE ? mode_str : ""), dirent_sb.st_nlink,
                     (long long) dirent_sb.st_size, REDACT_FileName, ns_stat_s, crc_str);
          } else {
             fprintf(WLOG, "%s %u %lld %s%s%s\n",
@@ -3645,6 +3689,8 @@ process_arglist(int argc, char *argv[])
          SELECT_OPTIONS |= SELECT_FAKE;
       } else if (strcmp(arg, "-select=lfn") == 0) {		// Long file names
          SELECT_OPTIONS |= SELECT_LFN;
+      } else if (strcmp(arg, "-select=sparse") == 0) {		// Sparse files
+         SELECT_OPTIONS |= SELECT_SPARSE;
       } else if (strncmp(arg, "-select_regex=", 14) == 0) {	// Select by regex
          select_regex_parse(arg + 14);
 #if defined(__ONEFS__)						// Only on OneFS native!
@@ -4061,7 +4107,7 @@ main(int argc, char *argv[])
    fprintf(Plog, "%16ld - voluntary context switches\n", p_usage.ru_nvcsw);
    fprintf(Plog, "%16ld - involuntary context switches\n", p_usage.ru_nivcsw);
 
-   // @@@ Summary scan stats ...
+   // @@@ Summary scan statistics ...
    fprintf(Plog, "@ pwalk scan statistics ...\n");
    fprintf(Plog, "%16llu - warning%s\n", GS.NWarnings, (GS.NWarnings != 1) ? "s" : "");
    fprintf(Plog, "%16llu - push%s\n", FIFO_PUSHES, (FIFO_PUSHES != 1) ? "es" : "");
@@ -4084,9 +4130,9 @@ main(int argc, char *argv[])
    }
    fprintf(Plog, "%16llx - MAX inode value scanned\n", GS.MAX_inode_Value_Seen);
 
-   // @@@ Selected files summary ...
+   // @@@ Selected selected files statistics ...
    if (SELECT_OPTIONS)
-      fprintf(Plog, "@ pwalk -select stats ...\n");
+      fprintf(Plog, "@ pwalk selected file statistics ...\n");
    if (GS.NSelected == 0) {
       fprintf(Plog, "               0 - files selected\n");
    } else {

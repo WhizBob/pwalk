@@ -1,4 +1,5 @@
 Version.FUTURE [ DEVELOPMENTAL TO-DO ]
+	ADD: Copy -L -D -H symlink-handling options from 'du'.
 	SOMEHOW: Do something to avoid multiple-processing of hard-linked inodes
 	$$$$ Add find(1)-like selection predicates and actions
 	Add external parameterization for -csv[=<list>] and [csv] pfile section (report column keys)
@@ -6,26 +7,27 @@ Version.FUTURE [ DEVELOPMENTAL TO-DO ]
 	Add external parameterization for -select in [tally] pfile section (file selection criteria)
 	Add external parameterization for +tally in [tally] section of parameter file
 	Add MD5 checksum features to -cmp mode
-	Add external parameters for -csv mode (the next most-likely project)
-	Make concurrency runtime-dynamic to allow variable impact
+	Make concurrency runtime-dynamic to allow varying impact of long-running jobs
 	Improve periodic status updates; make on-demand, add moving average, estimated current files/sec
-	- TODO: FIX: Always emit asccify'd directory and file names in primary outputs
-	- TODO: NEW: -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
-	- TODO: $$ Add pclt2 metadata items on OneFS
+	- FIX: Always emit asccify'd directory and file names in primary outputs
+	- NEW: -select=fake (OneFS-only) which uses aclu_get_sd() in pwalk_onefs.c
+	- $$ Add pclt2 metadata items on OneFS
 		... Add ifs.file_pool metadata (OneFS only)
 		... Remove pwalk_python.py dependency for -audit
-	- TODO: Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
+	- Use /dev/papi ? to fetch WORM data rather than syscall
+		... might later go over http ...
+	- Add -trash primary mode to move selected files to [target] (with mkdir -p if needed)
 ...
-	- TODO: Use /dev/papi ? to fetch WORM data rather than syscall
-		... could later go over http ...
-...
-Version 2.10a1 - 2020/07/24 - New features ...
+Version 2.10 - 2020/07 - New features & fixes ...
 	- NEW: -select_regex=<regex> - filenames matching <regex>, case-insensitive, extended syntax
+	- NEW: -select=sparse - files which appear to be sparse (DEVELOPMENTAL)
 	- NEW: -select=fake - files with uid or gid in 1000000-4000000 range (DEVELOPMENTAL)
 		When used with -ls, uid and gid are added to output
+		MISSING: call to determine actual PERSISTED IDs
 	- NEW: Selection options are now implicitly AND-ed!
 	- FIX: When any -select option used, do not include directory sizes in size statistics,
 		in other words, exclude them from per-directory subtotals and +tally statistics.
+	- FIX: +tally Inflation% heading corrected; now just "Inflation"
 Version 2.09b5 - 2020/07/08 - Bugfix ...
 	- FIX: fixed longstanding macOS issue with -gz pipe closing (I hope)
 Version 2.09b4 - 2020/04 - Minor bugfix ...

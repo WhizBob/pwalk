@@ -147,7 +147,7 @@ typedef struct {
 
 static char *TALLY_TAG = "tally";               // Default '+tally=<tag>' value
 static char *TALLY_COLUMN_HEADING[] = {
-   "Tag","Bucket","Count","Count%","sum(Size)","Size%","sum(Space)","Space%","Inflation%",NULL
+   "Tag","Bucket","Count","Count%","sum(Size)","Size%","sum(Space)","Space%","Inflation",NULL
 };
 static count_64 TALLY_BUCKET_SIZE[MAX_TALLY_BUCKETS] = {
    0,
