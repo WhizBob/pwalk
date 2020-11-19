@@ -5,9 +5,9 @@ for various ends including metadata extraction and formatting, tactical filesyst
 and utility operations such as bulk file deletion.  Also included is an assortment of ancillary
 programs and documentation.
 
-These programs are all by Bob Sneed of Dell EMC (Bob.Sneed@Dell.com) as part of a collection of
-utilities sometimes collectively referred to as "Bobware". While some of the utilities in the
-Bobware collection date back to the early 1980's, pwalk has only been under development since 2012.
+These programs are all by Bob Sneed (WhizBob@gmail.com) as part of a collection of utilities
+sometimes collectively referred to as "Bobware". While some of the utilities in the Bobware
+collection date back to the early 1980's, pwalk has only been under development since 2012.
 It has accumulated a unique set of features for solving various problems in a scale-out NAS
 environments.
 
